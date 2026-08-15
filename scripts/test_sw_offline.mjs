@@ -6,7 +6,7 @@
  *
  * This runs web/sw.js for real, in a Node sandbox with a minimal CacheStorage
  * and a fetch backed by the files on disk, and then CUTS THE NETWORK and
- * resolves all seven pilot cities out of the cache alone, using the shipped
+ * resolves every pilot city out of the cache alone, using the shipped
  * geo.js decoder and here.js's own sector logic.
  *
  * Nothing is stubbed on the BeHERE side: sw.js, geo.js decodeShard, nearest,
@@ -168,8 +168,12 @@ console.log("after install: SHELL %d entries, DATA %d entries (%d network hits)"
 
 eq(dataKeys.length, manifest.count + 1,
   "the DATA cache holds every manifest file plus the manifest itself");
-ok(dataKeys.filter((u) => u.includes("/data/grid/")).length === 631,
-  "all 631 grid shards are precached",
+// Derived from the manifest, never hardcoded: a pilot city added to bake.py
+// changes this count, and a test that pinned it would fail for the one reason
+// that is not a defect.
+const manifestGrid = manifest.files.filter((f) => f.startsWith("grid/")).length;
+ok(dataKeys.filter((u) => u.includes("/data/grid/")).length === manifestGrid,
+  "every one of the " + manifestGrid + " grid shards in the manifest is precached",
   dataKeys.filter((u) => u.includes("/data/grid/")).length);
 for (const nis of manifest.cities) {
   for (const f of ["meta.json", "streets.json", "sector.geojson"]) {
@@ -194,8 +198,11 @@ async function swFetch(url) {
   return await promise;
 }
 
-/* --- resolve all seven cities from the cache alone ---------------------- */
+/* --- resolve every pilot city from the cache alone --------------------- */
 
+// Landmark coordinates for the larger cities; for the two Walloon Brabant
+// villages the coordinate is the median of their own baked addresses, decoded
+// with web/app/geo.js, because neither has a landmark worth naming.
 const CITIES = [
   { nis: "44021", name: "Ghent", lat: 51.05363, lon: 3.72530 },
   { nis: "62063", name: "Liege", lat: 50.64504, lon: 5.57364 },
@@ -204,7 +211,19 @@ const CITIES = [
   { nis: "81001", name: "Arlon", lat: 49.68390, lon: 5.81670 },
   { nis: "25121", name: "Ottignies-LLN", lat: 50.66900, lon: 4.61180 },
   { nis: "92003", name: "Andenne", lat: 50.48940, lon: 5.09640 },
+  { nis: "25023", name: "Court-Saint-Etienne", lat: 50.64495, lon: 4.56066 },
+  { nis: "25068", name: "Mont-Saint-Guibert", lat: 50.64016, lon: 4.61463 },
 ];
+
+// The whole point of the pilot set is that no city may go untested. If a NIS
+// reaches the shipped manifest without a coordinate here, this test would
+// silently skip it, so fail instead.
+{
+  const covered = new Set(CITIES.map((c) => c.nis));
+  const missing = manifest.cities.filter((n) => !covered.has(n));
+  ok(missing.length === 0,
+    "every shipped pilot city has a test coordinate", missing.join(","));
+}
 
 async function readJSON(rel) {
   const res = await swFetch("data/" + rel);
@@ -293,11 +312,15 @@ for (const rel of ["meta.json", "municipalities.json", "nis_history.json",
   if (s) {
     eq(s.stored, s.total, "it reports every file stored");
     eq(s.ready, true, "and reports itself ready for offline use");
-    eq(s.cities.length, 7, "with a per-city breakdown of all seven");
+    eq(s.cities.length, manifest.cities.length,
+      "with a per-city breakdown of all " + manifest.cities.length);
     eq(s.vintage, manifest.vintage, "stamped with the pinned vintage");
-    const thin = s.cities.find((c) => c.nis === "25121");
+    // Mont-Saint-Guibert displaced Ottignies-LLN as the thinnest city. Pick it
+    // from the data rather than naming it, so the next addition cannot make
+    // this assertion quietly test the wrong city.
+    const thin = s.cities.reduce((a, b) => (b.total < a.total ? b : a));
     ok(thin && thin.stored === thin.total && thin.total > 0,
-      "including Ottignies-LLN, the thinnest city", thin);
+      "including " + thin.nis + ", the thinnest city", thin);
   }
 }
 
@@ -306,5 +329,5 @@ if (failures.length) {
   for (const f of failures) console.error("  FAIL " + f);
   process.exit(1);
 }
-console.log("acceptance test 1: all seven cities resolve from a COLD cache with " +
+console.log("acceptance test 1: all " + CITIES.length + " cities resolve from a COLD cache with " +
   "the network cut.");

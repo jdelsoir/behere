@@ -65,7 +65,7 @@ jobs:
             !.cache/bake/gtfs_*
           key: behere-bake-TF_RGN_ADDRESSES_STAT_SECTORS_20250401-sh_statbel_statistical_sectors_31370_20250101-v1
 
-      - name: Bake the seven pilot cities
+      - name: Bake the pilot cities
         run: python3 scripts/bake.py --out web/data --cache-dir .cache/bake
 
       # Gate first, fingerprint second. A partial bake produces a different
@@ -75,12 +75,15 @@ jobs:
         id: fp
         run: |
           python3 - <<'PY'
-          import gzip, hashlib, json, os
+          import gzip, hashlib, json, os, sys
 
           ROOT = "web/data"
           OUT = ".github/bake.fingerprint.json"
           BUDGET = 3145728
-          PILOTS = ["21004", "25121", "35013", "44021", "62063", "81001", "92003"]
+          # Single source of truth, see bake.py. Never repeat the list here.
+          sys.path.insert(0, "scripts")
+          from bake import PILOTS as _PILOTS
+          PILOTS = sorted(_PILOTS)
           MIN_GRID = 200
 
           def normalised(rel, blob):

@@ -6,7 +6,7 @@ name: Deploy to GitHub Pages
 # pinned 2025 sources by scripts/bake.py. A clone therefore has an app shell
 # and no data. If this workflow publishes without running the bake, Pages
 # serves a site that loads, renders its four bands, and answers "nothing is
-# stored on this device" in all seven pilot cities. It looks healthy from the
+# stored on this device" in every pilot city. It looks healthy from the
 # outside. That is the single worst outcome this repo can produce, so the
 # shard count and the byte budget are hard gates below, not warnings.
 #
@@ -131,7 +131,7 @@ jobs:
       # 404 to HEAD and 200 to GET) and never sends Range: (it is ignored, so a
       # range request pulls the whole 86 MB body). Both traps are handled in the
       # fetcher; this comment is here so nobody "optimises" them back in.
-      - name: Bake the seven pilot cities
+      - name: Bake the pilot cities
         run: python3 scripts/bake.py --out web/data --cache-dir .cache/bake
 
       # ------------------------------------------------------------------
@@ -147,9 +147,13 @@ jobs:
 
           ROOT = "web/data"
           BUDGET = 3145728          # 3 MiB, PLAN acceptance test 10
-          PILOTS = ["21004", "25121", "35013", "44021", "62063", "81001", "92003"]
-          # The seven pilots produce roughly 630 grid shards. A run that
-          # produced fewer than 200 did not read the address file at all.
+          # Import the pilot set rather than repeating it. A city added to
+          # bake.py must not be able to drift out of the gate that guards it.
+          sys.path.insert(0, "scripts")
+          from bake import PILOTS as _PILOTS
+          PILOTS = sorted(_PILOTS)
+          # The pilots produce roughly 700 grid shards. A run that produced
+          # fewer than 200 did not read the address file at all.
           MIN_GRID = 200
 
           fail = []
@@ -257,8 +261,8 @@ jobs:
           node scripts/test_zoom.mjs
 
       # PLAN acceptance test 1 and phase 1's exit criterion: installs web/sw.js
-      # for real, cuts the network, and resolves all seven cities from cache.
-      - name: Cold cache, airplane mode, seven cities
+      # for real, cuts the network, and resolves every pilot city from cache.
+      - name: Cold cache, airplane mode, every pilot city
         run: node scripts/test_sw_offline.mjs
 
       # Bust the service worker cache. sw.js ships the literal

@@ -99,8 +99,8 @@ Each `sources` entry: `id`, `title`, `publisher`, `url`, `retrieved` (`YYYY-MM-D
   "built": "2026-08-15",
   "contract": 1,
   "coord_dp": 5,
-  "grid": {"cells": 631, "size_m": 1000, "srs": "EPSG:3035"},
-  "municipalities": ["21004","25121","35013","44021","62063","81001","92003"],
+  "grid": {"cells": 674, "size_m": 1000, "srs": "EPSG:3035"},
+  "municipalities": ["21004","25023","25068","25121","35013","44021","62063","81001","92003"],
   "sources": [
     {
       "id": "irail_liveboard",
@@ -174,7 +174,7 @@ serialiser.
 ```json
 {
   "cells": {"44021": ["grid/1kmN3116E3879.json", "…188 entries…"], "…7 cities…": []},
-  "cities": ["21004","25121","35013","44021","62063","81001","92003"],
+  "cities": ["21004","25023","25068","25121","35013","44021","62063","81001","92003"],
   "count": 658,
   "files": ["21004/meta.json", "…", "grid/1kmN2955E4015.json", "…", "nis_history.json"],
   "vintage": "2025-01-01"
@@ -213,7 +213,7 @@ One field is **added** by this contract, because the Statbel HVD runtime API nee
 "44021": {"de":"Gent","dstr":"44000","fr":"Gand","nl":"Gent","nuts3":"BE234","prov":"40000","rgn":"02000"}
 ```
 
-`nuts3` comes from `cd_nuts_lvl3` in the sector geometry. Verified for all seven pilots: 44021→BE234, 62063→BE332, 21004→BE100, 35013→BE255, 81001→BE341, 25121→BE310, 92003→BE352.
+`nuts3` comes from `cd_nuts_lvl3` in the sector geometry. Verified for all nine pilots: 44021→BE234, 62063→BE332, 21004→BE100, 35013→BE255, 81001→BE341, 25121→BE310, 92003→BE352, 25023→BE310, 25068→BE310. The three Walloon Brabant pilots share BE310, which is why the zoom-out band must key on `nuts3` and never assume it identifies a municipality.
 
 ---
 
@@ -462,7 +462,7 @@ Top level:
 
 Rows are sorted by `(street_id, len(house_number), house_number)`. That ordering is what makes the delta columns compress: `st` becomes long runs of `0`, and consecutive addresses on a street are spatially adjacent so `y`/`x` deltas stay tiny.
 
-`t` (stops), array of objects because counts are small (across the 631 pilot cells: median **4**, max **78**, and **153 cells have none at all**, so the key is absent there):
+`t` (stops), array of objects because counts are small (across the 674 pilot cells: median **4**, max **78**, and **166 cells have none at all**, so the key is absent there):
 
 | Key | Meaning |
 |---|---|
@@ -486,7 +486,7 @@ Three properties, all deliberate:
 2. **Floored to 2 decimal places (~1.1 km).** A 1 km cell almost always sits in one 0.01-degree bucket, so adding or removing an address does not move the origin and therefore does not rewrite every offset in the shard. Scheduled rebuilds give clean diffs, which is the whole point of idempotency.
 3. **Integers only.** No float appears anywhere in a grid shard.
 
-Measured cost of the floored origin versus a content-tight one: **669 bytes smaller** across all seven cities. It is free.
+Measured cost of the floored origin versus a content-tight one: **669 bytes smaller** across the original seven cities. It is free.
 
 Decoding:
 
@@ -503,7 +503,7 @@ for (let i = 0; i < a.n; i++) {
 
 ### 7.4 Cells that straddle an unshipped municipality
 
-The 631 pilot cells also contain **95,693 addresses belonging to 55 other municipalities** that this release does not ship. Baking them would add roughly 32% to the grid payload and break the byte budget.
+The 674 pilot cells also contain **95,500 addresses belonging to other municipalities** that this release does not ship. Baking them would add roughly 32% to the grid payload and break the byte budget.
 
 **They are not baked. They are counted.** Each shard carries:
 
@@ -522,7 +522,7 @@ so the UI can say, precisely and by name (via `municipalities.json`), *"1,204 ad
 | Worst 9-cell read, raw | **643,894 B** (629 KB, centred on `1kmN3122E3881`) |
 | Worst 9-cell read, gzipped | **110,411 B** (108 KB) |
 
-(Measured on the address block. Stops add under 2%: 4,671 stops across all 631 pilot cells.)
+(Measured on the address block. Stops add under 2%: 4,804 stops across all 674 pilot cells.)
 
 629 KB of JSON in the worst case is chunky, so the fetch order is part of the contract:
 
@@ -869,24 +869,28 @@ PLAN quotes a flat 20,000/day. That is only correct for ODWB.
 
 ## 11. Byte budget
 
-Measured end to end: real extraction of all 297,382 pilot addresses, real 2025 sector geometry through the real simplifier, real stops from all four GTFS feeds, serialised exactly per section 1, gzipped at level 9.
+Measured end to end: real extraction of all 303,800 pilot addresses, real 2025 sector geometry through the real simplifier, real stops from all four GTFS feeds, serialised exactly per section 1, gzipped at level 9.
 
 **Per city, gzipped bytes:**
 
 | City | NIS | Addr | Streets | Sectors | Cells | Stops | meta | streets | sector | **grid** | **TOTAL** | PLAN §8 | vs PLAN |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Ghent | 44021 | 137,119 | 2,637 | 254 | 188 | 1,152 | 645 | 16,342 | 30,333 | **495,637** | **542,957** | 893 KB | **-41%** |
-| Liège | 62063 | 68,895 | 1,712 | 217 | 95 | 1,219 | 439 | 11,056 | 28,821 | **295,587** | **335,903** | 551 KB | -40% |
-| City of Brussels | 21004 | 36,425 | 1,091 | 112 | 60 | 1,377 | 359 | 14,451 | 13,635 | **170,615** | **199,060** | 297 KB | -35% |
-| Ostend | 35013 | 23,986 | 697 | 88 | 52 | 233 | 308 | 4,490 | 9,867 | **103,181** | **117,846** | 195 KB | -41% |
-| Arlon | 81001 | 11,053 | 394 | 71 | 96 | 265 | 411 | 2,876 | 19,343 | **72,603** | **95,233** | 95 KB | -2% |
-| Ottignies-LLN | 25121 | 10,079 | 584 | 68 | 42 | 166 | 309 | 4,453 | 10,115 | **55,398** | **70,275** | 88 KB | -22% |
-| Andenne | 92003 | 9,825 | 395 | 91 | 98 | 259 | 404 | 2,804 | 18,424 | **69,674** | **91,306** | 86 KB | **+4%** |
-| **Seven cities** | | **297,382** | **7,510** | **901** | **631** | **4,671** | | | | | **1,452,580** | 2.15 MB | **-36%** |
-| shared (`municipalities` + `nis_history`) | | | | | | | | | | | 15,280 | | |
-| **GRAND TOTAL** | | | | | | | | | | | **1,467,860 B = 1.40 MB** | | |
+| Ghent | 44021 | 137,119 | 2,637 | 254 | 188 | 1,152 | 730 | 16,342 | 30,333 | **497,945** | **545,350** | 893 KB | **-39%** |
+| Liège | 62063 | 68,895 | 1,712 | 217 | 95 | 1,219 | 524 | 11,056 | 28,821 | **296,167** | **336,568** | 551 KB | -40% |
+| City of Brussels | 21004 | 36,425 | 1,091 | 112 | 60 | 1,377 | 445 | 14,451 | 13,635 | **171,280** | **199,811** | 297 KB | -34% |
+| Ostend | 35013 | 23,986 | 697 | 88 | 52 | 233 | 390 | 4,490 | 9,867 | **103,849** | **118,596** | 195 KB | -41% |
+| Arlon | 81001 | 11,053 | 394 | 71 | 96 | 265 | 496 | 2,876 | 19,343 | **72,210** | **94,925** | 95 KB | -2% |
+| Andenne | 92003 | 9,825 | 395 | 91 | 98 | 259 | 490 | 2,804 | 18,424 | **69,880** | **91,598** | 86 KB | **+4%** |
+| Ottignies-LLN | 25121 | 10,079 | 584 | 68 | 42 | 166 | 397 | 4,453 | 10,115 | **52,401** | **67,366** | 88 KB | -25% |
+| Court-Saint-Etienne | 25023 | 3,770 | 162 | 25 | 34 | 94 | 359 | 1,387 | 6,439 | **26,726** | **34,911** | n/a | new |
+| Mont-Saint-Guibert | 25068 | 2,648 | 120 | 21 | 22 | 92 | 333 | 1,035 | 4,619 | **18,385** | **24,372** | n/a | new |
+| **Nine cities** | | **303,800** | **7,792** | **947** | **674** | **4,857** | | | | | **1,513,497** | | |
+| shared (`municipalities` + `nis_history` + i18n + `meta` + `precache`) | | | | | | | | | | | 37,239 | | |
+| **GRAND TOTAL** | | | | | | | | | | | **1,550,736 B = 1.48 MB** | | |
 
-**Against acceptance test 10 (seven cities under 3 MB gzipped): 1.40 MB. Passing with 53% headroom.**
+Court-Saint-Etienne and Mont-Saint-Guibert were added on 15 August 2026 and cost **56,354 gzipped bytes** between them, 1.8% of the ceiling. Ottignies-LLN's grid figure *fell* from 55,398 to 52,401 despite nothing about it changing: its two new neighbours share 1 km cells with it, and a shared shard's bytes are apportioned across every city that claims it. The city totals are therefore an attribution, not a partition; only the GRAND TOTAL is a measured fact about the shipped tree.
+
+**Against acceptance test 10 (the pilot set under 3 MB gzipped): 1.48 MB for nine cities. Passing with 51% headroom.**
 
 ### 11.1 Where the saving came from
 
@@ -907,7 +911,7 @@ Andenne is the one city above its PLAN figure. PLAN's number counted address dat
 
 ### 11.3 Headroom
 
-At 1.40 MB against a 3 MB ceiling, there is room for the baked POI layer (`p` in the grid shards), which is not yet measured because the Flemish tourism CSV and Walloon GeoPackage are Phase 2 work. Ostend alone has 2,962 tourism records. At the density observed for stops, the full national POI set for seven cities should land near 150 to 250 KB gzipped, leaving roughly 1.3 MB spare.
+At 1.48 MB against a 3 MB ceiling, there is room for the baked POI layer (`p` in the grid shards), which is not yet measured because the Flemish tourism CSV and Walloon GeoPackage are Phase 2 work. Ostend alone has 2,962 tourism records. At the density observed for stops, the full national POI set for the nine pilots should land near 150 to 300 KB gzipped, leaving roughly 1.2 MB spare.
 
 **National bundle: still do not ship it.** At the measured 4.885 gzipped bytes per address, all 4,490,779 addresses extrapolate to **20.9 MB**, plus **2.9 MB** for all 20,781 sectors, so roughly **24 MB gzipped** (PLAN estimated 33 MB on the verbose layout). Better, but still far past what belongs in Git history.
 
@@ -921,7 +925,7 @@ Everything below is measured. PLAN should be read through this list.
 |---|---|---|---|
 | 1 | §3.2: address file is 926.4 MB uncompressed | **865,015,284 B** | Cosmetic |
 | 2 | §4: join `CD_SECTOR_2024` to sector geometry | The 2024/25 reform broke it. **Liège joins on 2.58% of addresses** | **Structural.** Address to sector is bake-time point-in-polygon (§6.1) |
-| 3 | §7: per-city sector counts | Stale for all seven. Ghent is **254**, not 199 | Counts corrected in `<nis>/meta.json` |
+| 3 | §7: per-city sector counts | Stale for all seven originals. Ghent is **254**, not 199 | Counts corrected in `<nis>/meta.json` |
 | 4 | §4: `CD_STR` "joins to BeSt `street_id` for trilingual street names" | **Street names are already in the address file** (`TX_STR_NM_NL/FR/DE`) | The BeSt join is not needed for names. 232 MB of downloads avoided |
 | 5 | §3.1: GTFS `/static` is a runtime source | 287 MB. Cannot be a runtime source | Bake-time only (§10.2) |
 | 6 | §5: GTFS `stop_name` is "a single string, in the operator's own language" | **`translations.txt` carries authored NL/FR/DE.** STIB 1,088 names, NMBS 654 | Feeds resolver step 1 (§7.7) |
@@ -930,7 +934,7 @@ Everything below is measured. PLAN should be read through this list.
 | 9 | §3.1: Statbel HVD gives "statistics per municipality" | Stops at **NUTS3 (arrondissement)**. Columns are UPPERCASE and differ per table | Zoom out keys on `nuts3` (§10.3) |
 | 10 | §3.2 / §6: sector geometry `…_20260101` | The 2026 file is not the pinned vintage | Pinned to `…_20250101`, matching the non-negotiables |
 | 11 | §8: Ghent 893 KB gzipped | **542,924 B** under this schema | 41% under budget (§11) |
-| 12 | (unstated) | 631 pilot cells also hold **95,693 addresses from 55 unshipped municipalities** | Counted in `fm`, not baked (§7.4) |
+| 12 | (unstated) | 674 pilot cells also hold **95,500 addresses from unshipped municipalities** | Counted in `fm`, not baked (§7.4) |
 
 Two more worth carrying forward, from the ground-truth passes rather than from PLAN:
 
@@ -945,7 +949,7 @@ The bake is not done until all of these pass.
 
 1. **Idempotency.** Run `bake.py` twice into two directories; `diff -r` must be empty. Run once with `PYTHONHASHSEED=0` and once with `PYTHONHASHSEED=random`; both must match.
 2. **Precision.** No number in any `.geojson` matches `-?[0-9]+\.[0-9]{6,}`. No `.json` under `grid/` contains `.` inside a number at all.
-3. **Size.** No `sector.geojson` over 150,000 B. Seven-city gzipped total under 3,145,728 B.
+3. **Size.** No `sector.geojson` over 150,000 B. Whole-tree gzipped total under 3,145,728 B.
 4. **No secrets.** Grep the built tree for `key=`, `token`, `apikey`, `Authorization`. Must be clean (acceptance test 7).
 5. **Names.** No shipped record has an empty name in all of NL, FR, DE (resolver step 4 must always succeed).
 6. **Vintage.** Every shipped file carries `"vintage":"2025-01-01"`; no file carries a wall-clock timestamp.
@@ -953,7 +957,7 @@ The bake is not done until all of these pass.
 8. **Grid agreement.** `python3 scripts/grid.py` self-test passes, and `web/app/grid.js` returns identical cell ids over the committed fixture.
 9. **Precache manifest.** `python3 scripts/gen_precache.py --check` is clean: `web/data/precache.json` lists exactly the tree that was baked.
 10. **Chrome coverage.** `python3 scripts/check_i18n.py` passes: every key any band module asks for exists, non-blank and with matching `{placeholders}`, in all three of `en`, `nl`, `fr`. This is the static half of acceptance test 4; `node scripts/test_i18n_marker.mjs` is the runtime half and proves the fallback is *marked* when a key is missing.
-11. **Vintage guard.** `node scripts/test_stats.mjs` and `node scripts/test_zoom.mjs` pass against the 55 records in `nis_history.json` and the 565 codes in `municipalities.json` (acceptance test 3). `--live` additionally calls the Statbel HVD API for all seven pilots.
-12. **Cold cache.** `node scripts/test_sw_offline.mjs` passes: `web/sw.js` is installed for real, the network is cut, and all seven cities resolve address, sector and municipality from the cache alone (acceptance test 1, PLAN phase 1 exit criterion).
+11. **Vintage guard.** `node scripts/test_stats.mjs` and `node scripts/test_zoom.mjs` pass against the 55 records in `nis_history.json` and the 565 codes in `municipalities.json` (acceptance test 3). `--live` additionally calls the Statbel HVD API for every pilot.
+12. **Cold cache.** `node scripts/test_sw_offline.mjs` passes: `web/sw.js` is installed for real, the network is cut, and every pilot city resolves address, sector and municipality from the cache alone (acceptance test 1, PLAN phase 1 exit criterion).
 
 Gates 9 to 12 need `node` only as a test runner. There is no `package.json`, no `npm install` and no dependency: they are plain files, exactly like `scripts/*.py`.

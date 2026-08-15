@@ -83,9 +83,19 @@ SECTOR_MAX_BYTES = 150000
 # CONTRACT 13 gate 3 / acceptance test 10.
 BUDGET_MAX_GZ = 3145728
 
-# The seven pilot municipalities, 2025 NIS codes.
+# The pilot municipalities, 2025 NIS codes. Single source of truth: the CI
+# gates in .github/workflows/ import this dict rather than repeating it, so a
+# city added here cannot drift out of sync with the checks that guard it.
+#
+# Court-Saint-Etienne and Mont-Saint-Guibert are spelled here exactly as
+# Statbel authors them. Statbel writes Court-Saint-Etienne without the acute
+# accent while preserving it in Liege -> "Liège" in the same file, so the
+# unaccented form is the authored name, not a mangling on our side, and is left
+# alone under the never-rewrite-authored-names rule.
 PILOTS = {
     "21004": "City of Brussels",
+    "25023": "Court-Saint-Etienne",
+    "25068": "Mont-Saint-Guibert",
     "25121": "Ottignies-LLN",
     "35013": "Ostend",
     "44021": "Ghent",
@@ -429,7 +439,7 @@ PRECACHE_NAME = "precache.json"
 def precache_doc(relpaths, cells_by_city, cities, vintage=VINTAGE):
     """The manifest web/sw.js reads to store the whole release at install.
 
-    PLAN phase 1's exit criterion is "all seven cities resolve offline from a
+    PLAN phase 1's exit criterion is "every pilot city resolves offline from a
     COLD cache". A cache-first fetch rule cannot deliver that on its own: it
     only ever caches squares the user already stood in while online. So the
     service worker precaches this list at install, and this function is what
@@ -1529,7 +1539,7 @@ def parse_args(argv):
     p.add_argument("--cache-dir", default=os.path.join(_REPO, ".cache", "bake"),
                    help="download cache (default: .cache/bake)")
     p.add_argument("--cities", default="",
-                   help="comma-separated NIS codes; default is the seven pilots")
+                   help="comma-separated NIS codes; default is every pilot")
     p.add_argument("--sample", default="",
                    help="read this pre-extracted address fixture instead of "
                         "downloading the 212 MB archive. Same code path.")

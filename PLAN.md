@@ -5,6 +5,8 @@
 Build brief for Claude Code. Self-contained: everything needed is in this file. All figures were measured against live endpoints on **14 August 2026**. Counts drift, so re-verify before relying on any number (see Appendix A).
 
 > **Revised 15 August 2026, after the build.** Six claims in the original brief did not survive contact with the data and have been corrected in place: the sector join in section 4, the sector counts in section 7, the Statbel HVD granularity and Opendatasoft rate limits in section 3.1, the GTFS stop-name language claim in section 5, and the byte budget in section 8. Each correction is marked **Corrected** and states what was measured. `docs/CONTRACT.md` carries the underlying evidence.
+>
+> **The pilot is nine municipalities, not seven.** Court-Saint-Etienne (`25023`) and Mont-Saint-Guibert (`25068`) were added the same day. The list lives in one place, `PILOTS` in `scripts/bake.py`; the CI gates and the offline test import it rather than repeating it, so counts in prose are descriptive and never authoritative.
 
 ---
 
@@ -264,7 +266,7 @@ Four bands stacked on one screen. No tabs, no dashboard.
 
 ## 7. Pilot cities
 
-Seven municipalities for human testing. Address and sector counts read from the official Statbel file; tourism counts from live queries.
+Nine municipalities for human testing. Address and sector counts read from the official Statbel file; tourism counts from live queries.
 
 **Corrected 15 August 2026.** Address and postcode counts held exactly. The **Sectors** column did not: it was derived from the dead `CD_SECTOR_2024` join, and every figure was wrong. The values below are the real counts from point-in-polygon against the pinned 2025 geometry, with the original brief's claim in brackets. The `Stops` and `Cells` columns are new, measured from the shipped shards.
 
@@ -275,8 +277,14 @@ Seven municipalities for human testing. Address and sector counts read from the 
 | City of Brussels | `21004` | 36,425 | **112** (was 118) | 60 | 1,377 | 10 | 1 | opendata.brussels.be, 207 datasets | rich |
 | Ostend | `35013` | 23,986 | **88** (was 71) | 52 | 233 | 1 | **2,962** | none | tourism-heavy, civic-thin |
 | Arlon | `81001` | 11,053 | **71** (was 70) | 96 | 265 | 1 | 195 | ODWB, 3 datasets | thin |
-| Ottignies-Louvain-la-Neuve | `25121` | 10,079 | **68** (was 60) | 42 | 166 | 4 | 76 | **zero datasets** | thinnest |
+| Ottignies-Louvain-la-Neuve | `25121` | 10,079 | **68** (was 60) | 42 | 166 | 4 | 76 | **zero datasets** | thin |
 | Andenne | `92003` | 9,825 | **91** (was 74) | 98 | 259 | 1 | 38 | ODWB, 19 datasets | thin |
+| Court-Saint-Etienne | `25023` | 3,770 | 25 | 34 | 94 | 1 | — | none | village |
+| Mont-Saint-Guibert | `25068` | 2,648 | 21 | 22 | 92 | 1 | — | none | **thinnest** |
+
+**Added 15 August 2026: Court-Saint-Etienne and Mont-Saint-Guibert.** Both sit in Walloon Brabant on `nuts3` BE310, the same arrondissement as Ottignies-Louvain-la-Neuve, and both are roughly a quarter of its size. They extend the thin end of the set: Mont-Saint-Guibert is now the smallest municipality in the pilot at 2,648 addresses, a fifty-second of Ghent. If the app reads as broken anywhere, it will read as broken here first.
+
+Both are spelled as Statbel authors them. Statbel writes **Court-Saint-Etienne without the acute accent**, while preserving it in `Liège` in the same file, so the unaccented form is the authored name rather than an encoding fault on our side. It is left alone under the never-rewrite-authored-names rule. Supplying the accented form is a curated-override decision for `web/data/i18n/`, not something the bake may do.
 
 Note that Andenne and Arlon span more 1 km cells than Ghent despite having a fourteenth of its addresses. They are rural municipalities with sparse addresses spread over a wide area, which is why they also carry more sector polygons than the original brief expected.
 
@@ -284,7 +292,7 @@ Official names, from Statbel: Gent / Gand, Luik / Liège / Lüttich, Brussel / B
 
 ### The architectural rule these cities force
 
-**National layers first, local layers as enrichment.** Two of the seven publish almost nothing locally. That is why they are in the set. Every city gets addresses, sector polygons, statistics, transit stops and tourism or heritage from national or regional sources. City portals only add texture.
+**National layers first, local layers as enrichment.** Four of the nine publish nothing locally at all. That is why they are in the set. Every city gets addresses, sector polygons, statistics, transit stops and tourism or heritage from national or regional sources. City portals only add texture.
 
 Ottignies-Louvain-la-Neuve, with 0 local datasets, still gets 10,079 addresses, 60 sectors, 76 tourism records, live train and TEC departures, and full Statbel context. If it feels empty, the architecture is wrong, not the city.
 
@@ -302,16 +310,20 @@ The original estimate assumed an array of verbose JSON objects. **Corrected 15 A
 | Ostend | 470,205 | **118,596** | (195 KB) |
 | Arlon | 317,615 | **94,925** | (95 KB) |
 | Andenne | 303,821 | **91,598** | (86 KB) |
-| Ottignies-LLN | 252,055 | **70,529** | (88 KB) |
-| Shared root + i18n | | **37,005** | not counted |
-| **Seven cities total** | **6.23 MB** | **1,494,382 B = 1.43 MB** | (2.15 MB) |
+| Ottignies-LLN | 271,400 | **74,449** | (88 KB) |
+| Court-Saint-Etienne | 144,777 | **42,644** | not in the original set |
+| Mont-Saint-Guibert | 95,573 | **28,413** | not in the original set |
+| Shared root + i18n | 115,438 | **24,231** | not counted |
+| **Nine cities, whole shipped tree** | **6,458,304** | **1,550,736 B = 1.48 MB** | (2.15 MB for seven) |
 | All 565 municipalities | ~150 MB | ~23 MB | (~33 MB) |
 
-**47.5% of the 3 MB acceptance ceiling.** CI fails the build if this figure ever exceeds 3,145,728 B.
+**49.3% of the 3 MB acceptance ceiling**, across 708 files and 674 grid shards. CI fails the build if this figure ever exceeds 3,145,728 B.
+
+Adding the two Walloon Brabant villages cost **56,354 gzipped bytes**, 1.8% of the ceiling for a 29% larger pilot set. Ottignies-LLN's own figure rose from 70,529 to 74,449 because its neighbours are now baked: addresses that were previously counted as foreign in its shared 1 km cells are real entries today.
 
 Andenne is the one city that came in above its estimate, by 6%, because the original figure counted addresses only and Andenne ships 91 rural sector polygons. Density is no longer flat per address for exactly that reason: rural municipalities carry disproportionate polygon and cell overhead.
 
-**Do not commit the national bundle in the MVP.** Ship the seven cities and lazy-load per municipality later. Keep generated data out of Git history where possible, so the repo does not accumulate a copy of every vintage. If the national bundle is wanted later, store shards pre-compressed and decode with `DecompressionStream("gzip")` in the browser.
+**Do not commit the national bundle in the MVP.** Ship the pilot cities and lazy-load per municipality later. Keep generated data out of Git history where possible, so the repo does not accumulate a copy of every vintage. If the national bundle is wanted later, store shards pre-compressed and decode with `DecompressionStream("gzip")` in the browser.
 
 ---
 
@@ -329,17 +341,17 @@ python3 scripts/ghpages_preflight.py ./web --repo-name behere
 
 **Exit criteria:** GO or GO-WITH-FIXES. No absolute asset paths, `.nojekyll` present, no file over 100 MB, no secrets. This app has no secrets by design, which is worth verifying rather than assuming.
 
-### Phase 1: data pipeline, seven cities
+### Phase 1: data pipeline, the pilot cities
 
 One idempotent script producing byte-identical output for identical input, so a scheduled rebuild yields a clean diff.
 
-- Fetch BeSt Address and the Statbel address-to-sector file, filter to the 7 NIS codes
+- Fetch BeSt Address and the Statbel address-to-sector file, filter to the pilot NIS codes in `bake.py`'s `PILOTS`
 - Emit `web/data/<nis>/streets.json`, `web/data/<nis>/meta.json`, `web/data/grid/<GRD_NEWID>.json`
 - Simplify sector polygons per municipality, target under 150 KB each
 - Extract `stops.txt` from the four NAP GTFS zips, shard by 1 km cell
 - Build `nis_history.json` and the 565-row EN name override
 
-**Exit criteria:** all seven cities resolve offline from a cold cache. Total shipped data under 3 MB gzipped.
+**Exit criteria:** every pilot city resolves offline from a cold cache. Total shipped data under 3 MB gzipped.
 
 ### Phase 2: the four bands, unstyled
 
@@ -351,7 +363,7 @@ Build against real shards and real live endpoints. Unstyled but complete, so dat
 - **Now:** time filter over opening hours, market days, collection calendars
 - Language resolver with the four-step fallback and the untranslated marker
 
-**Exit criteria:** all seven cities render all four bands with no blank panels, Ottignies-Louvain-la-Neuve included.
+**Exit criteria:** every pilot city renders all four bands with no blank panels, Mont-Saint-Guibert included.
 
 ### Phase 3: PWA shell
 
@@ -396,7 +408,7 @@ Test for contrast, not uniformity.
 
 ## 10. Acceptance tests
 
-1. Cold start, airplane mode, in each of the 7 cities: Here resolves to an address, sector and municipality.
+1. Cold start, airplane mode, in each pilot city: Here resolves to an address, sector and municipality.
 2. Postcode 1000 never resolves to "the municipality of Brussels" on its own.
 3. A statistic from a pre-2025 vintage either passes through `nis_history.json` or is refused, never silently dropped.
 4. No UI string is ever blank. Untranslated strings are visibly marked.
@@ -405,7 +417,7 @@ Test for contrast, not uniformity.
 7. No network call carries a key, token or credential. `grep` the built output to prove it.
 8. Every layer displays its source and its vintage date.
 9. Geolocation is debounced. Live results are cached 30 to 60 seconds. No polling loops.
-10. Total shipped data under 3 MB gzipped for the seven cities.
+10. Total shipped data under 3 MB gzipped for the whole pilot set.
 
 ---
 
