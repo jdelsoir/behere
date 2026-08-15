@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Offline — BeHERE</title>
+
+<!-- This page is only ever served by the service worker, from cache, with no
+     network. It therefore needs no connect-src at all. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'none'; img-src 'self' data:;
+               style-src 'self' 'unsafe-inline'; script-src 'self';
+               base-uri 'none'; object-src 'none'; form-action 'none'">
+
+<meta name="theme-color" content="#0f1216" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#1d3a5a">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="app/app.css">
+<script src="app/offline.js" defer></script>
+</head>
+
+<body class="standalone">
+<div class="card">
+
+  <h1>No network</h1>
+
+  <p class="sub">
+    BeHERE could not reach the network. The parts of the app that live on this
+    device still work: your address, your neighbourhood, the municipality, and
+    the stops around you.
+  </p>
+
+  <!-- Last-known departures, with an explicit "as of". Written by app/offline.js
+       from what the Go band stored on the last successful fetch. If nothing was
+       ever stored, the block below stays and names what is missing, rather than
+       showing an empty list. -->
+  <section id="departures" aria-labelledby="dep-h">
+    <h2 id="dep-h" class="answer">Last departures seen</h2>
+    <p class="quiet" id="dep-empty">
+      No departures have been fetched on this device yet, so there is nothing to
+      show from before the network went away.
+    </p>
+    <p class="asof" id="dep-asof" hidden></p>
+    <ul class="rows" id="dep-list" hidden></ul>
+  </section>
+
+  <p>
+    <button type="button" class="btn" id="retry">Try again</button>
+  </p>
+
+</div>
+</body>
+</html>

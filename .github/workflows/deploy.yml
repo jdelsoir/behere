@@ -1,0 +1,336 @@
+name: Deploy to GitHub Pages
+
+# THE BAKE RUNS HERE, AND ONLY HERE.
+#
+# web/data/ is not in Git (see .gitignore): every shard is derived from the
+# pinned 2025 sources by scripts/bake.py. A clone therefore has an app shell
+# and no data. If this workflow publishes without running the bake, Pages
+# serves a site that loads, renders its four bands, and answers "nothing is
+# stored on this device" in all seven pilot cities. It looks healthy from the
+# outside. That is the single worst outcome this repo can produce, so the
+# shard count and the byte budget are hard gates below, not warnings.
+#
+# Settings -> Pages -> Source must be "GitHub Actions" (build_type: workflow).
+# There is no gh-pages branch and nothing is committed by this workflow.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time. cancel-in-progress is false on purpose: a
+# cold bake downloads roughly 550 MB and takes many minutes, and cancelling a
+# run that has already reached actions/deploy-pages can leave the Pages
+# deployment half-applied. Queue instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned minor version. The bake promises byte-identical output for
+      # identical input, and pinning the interpreter removes one way for a
+      # runner image bump to quietly break that promise.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # NOTHING IS INSTALLED. No pip, no requirements.txt, no pyproject. The
+      # whole pipeline is stdlib only (CLAUDE.md) and this step exists to make
+      # a future "just add requests" impossible to land quietly.
+      - name: Prove the pipeline is dependency-free
+        run: |
+          python3 -VV
+          for f in requirements.txt requirements-dev.txt Pipfile pyproject.toml setup.py; do
+            if [ -e "$f" ]; then
+              echo "::error::$f exists. CI is stdlib only; nothing may be installed."
+              exit 1
+            fi
+          done
+          python3 - <<'PY'
+          import ast, pathlib, sys
+          # The stdlib module names this pipeline is allowed to import, plus its
+          # own sibling modules. Anything else means a pip install crept in.
+          allowed = set(sys.stdlib_module_names) | {
+              "grid", "geo31370", "geo31370_validate", "bake",
+              "build_municipalities", "gen_precache", "stamp_sw",
+          }
+          bad = []
+          for path in sorted(pathlib.Path("scripts").glob("*.py")):
+              tree = ast.parse(path.read_text(encoding="utf-8"))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      names = [a.name for a in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      names = [node.module or ""]
+                  else:
+                      continue
+                  for name in names:
+                      root = name.split(".")[0]
+                      if root and root not in allowed:
+                          bad.append("%s imports %s" % (path, root))
+          if bad:
+              for line in bad:
+                  print("::error::third-party import: %s" % line)
+              raise SystemExit(1)
+          print("scripts/ imports stdlib only")
+          PY
+
+      # ------------------------------------------------------------------
+      # The source cache.
+      #
+      # KEY: pinned to the two 2025 filenames and nothing else. No date, no
+      # run number, no hashFiles(), because those never repeat and the cache
+      # would then never hit. Both archives are immutable at Statbel: the
+      # 20250401 address-sector file and the 20250101 sector geometry are
+      # finished publications, not rolling ones, so "same key forever" is the
+      # correct semantics rather than a shortcut. The 20260101 address-sector
+      # file does not exist (404); do not chase it.
+      #
+      # Bump the trailing -v1 by hand, and only when deliberately moving to a
+      # new vintage or when a poisoned cache has to be abandoned. Actions
+      # cache entries are immutable once written, so a key cannot be
+      # overwritten, only replaced by a new one.
+      #
+      # restore/save are split rather than using actions/cache, so that a
+      # bake which fails halfway (a truncated 212 MB download, a Statbel
+      # timeout) never gets its partial directory written under the permanent
+      # key. Save runs only after the bake has succeeded.
+      #
+      # PATH: the download directory MINUS the GTFS zips. Those four feeds are
+      # live, not vintage-pinned, and storing them under a key that promises
+      # "the pinned 2025 sources" would freeze every transit stop in the app at
+      # whatever the first successful run happened to download. Nothing would
+      # ever invalidate it, and refresh-data.yml, whose whole job is noticing
+      # that stops moved, would go permanently blind. So the 265 MB that cannot
+      # change is cached forever and the 287 MB that can is re-fetched every
+      # run. bake.py re-downloads any file whose sidecar is absent, so the
+      # exclusion needs no other cooperation.
+      # ------------------------------------------------------------------
+      - name: Restore the pinned 2025 source archives
+        id: bake_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache/bake
+            !.cache/bake/gtfs_*
+          key: behere-bake-TF_RGN_ADDRESSES_STAT_SECTORS_20250401-sh_statbel_statistical_sectors_31370_20250101-v1
+
+      # bake.py never sends HEAD to the NAP GTFS /static endpoints (they answer
+      # 404 to HEAD and 200 to GET) and never sends Range: (it is ignored, so a
+      # range request pulls the whole 86 MB body). Both traps are handled in the
+      # fetcher; this comment is here so nobody "optimises" them back in.
+      - name: Bake the seven pilot cities
+        run: python3 scripts/bake.py --out web/data --cache-dir .cache/bake
+
+      # ------------------------------------------------------------------
+      # THE GATE. Independent of bake.py's own budget check on purpose: this
+      # one inspects the tree that is about to be uploaded, so it also catches
+      # a bake that was skipped, partially applied, or overwritten by a later
+      # step. A silent empty deploy dies here.
+      # ------------------------------------------------------------------
+      - name: Refuse to publish an empty or oversized data tree
+        run: |
+          python3 - <<'PY'
+          import gzip, os, sys
+
+          ROOT = "web/data"
+          BUDGET = 3145728          # 3 MiB, PLAN acceptance test 10
+          PILOTS = ["21004", "25121", "35013", "44021", "62063", "81001", "92003"]
+          # The seven pilots produce roughly 630 grid shards. A run that
+          # produced fewer than 200 did not read the address file at all.
+          MIN_GRID = 200
+
+          fail = []
+          if not os.path.isdir(ROOT):
+              fail.append("%s does not exist: the bake did not run" % ROOT)
+              print("::error::%s" % fail[0]); raise SystemExit(1)
+
+          for rel in ("meta.json", "precache.json", "municipalities.json",
+                      "nis_history.json", "i18n/en.json"):
+              if not os.path.isfile(os.path.join(ROOT, rel)):
+                  fail.append("missing shared file %s" % rel)
+
+          for nis in PILOTS:
+              for name in ("meta.json", "streets.json", "sector.geojson"):
+                  if not os.path.isfile(os.path.join(ROOT, nis, name)):
+                      fail.append("missing %s/%s" % (nis, name))
+
+          grid_dir = os.path.join(ROOT, "grid")
+          grid = sorted(f for f in os.listdir(grid_dir)) if os.path.isdir(grid_dir) else []
+          if len(grid) < MIN_GRID:
+              fail.append("only %d grid shards (expected at least %d)"
+                          % (len(grid), MIN_GRID))
+
+          # Same measurement bake.py uses, so the two numbers are comparable.
+          total_gz = total_raw = files = 0
+          for dirpath, dirnames, filenames in os.walk(ROOT):
+              dirnames.sort()
+              for name in sorted(filenames):
+                  blob = open(os.path.join(dirpath, name), "rb").read()
+                  total_raw += len(blob)
+                  total_gz += len(gzip.compress(blob, 9, mtime=0))
+                  files += 1
+          if total_gz > BUDGET:
+              fail.append("shipped tree is %d B gzipped, over the %d B budget"
+                          % (total_gz, BUDGET))
+
+          # The vintage is pinned. A shard set carrying anything else means a
+          # cross-vintage NIS join is waiting to happen.
+          import json
+          vintage = json.load(open(os.path.join(ROOT, "meta.json"))).get("vintage")
+          if vintage != "2025-01-01":
+              fail.append("meta.json vintage is %r, expected '2025-01-01'" % vintage)
+
+          print("files      %d" % files)
+          print("grid       %d shards" % len(grid))
+          print("raw        %d B" % total_raw)
+          print("gzipped    %d B of %d allowed (%.1f%% used)"
+                % (total_gz, BUDGET, 100.0 * total_gz / BUDGET))
+          print("vintage    %s" % vintage)
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("### Bake\n\n")
+                  fh.write("| metric | value |\n|---|---|\n")
+                  fh.write("| files | %d |\n" % files)
+                  fh.write("| grid shards | %d |\n" % len(grid))
+                  fh.write("| gzipped | %d B of %d (%.1f%%) |\n"
+                           % (total_gz, BUDGET, 100.0 * total_gz / BUDGET))
+                  fh.write("| vintage | %s |\n" % vintage)
+
+          for line in fail:
+              print("::error::%s" % line)
+          raise SystemExit(1 if fail else 0)
+          PY
+
+      # Only now, with a complete and in-budget tree on disk, is the download
+      # directory known to be whole and worth keeping.
+      - name: Save the source cache
+        if: steps.bake_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .cache/bake
+            !.cache/bake/gtfs_*
+          key: ${{ steps.bake_cache.outputs.cache-primary-key }}
+
+      # The idempotency promise, checked rather than asserted. --offline forbids
+      # the network, so this rebakes from the cache alone and diffs. If it ever
+      # fails, refresh-data.yml would start opening a PR on every scheduled run
+      # for no reason, which is how a data refresh workflow becomes noise and
+      # then gets ignored.
+      - name: Prove the bake is byte-identical on a second run
+        run: |
+          python3 scripts/bake.py --offline --out "$RUNNER_TEMP/bake-again" --cache-dir .cache/bake
+          diff -r web/data "$RUNNER_TEMP/bake-again"
+          echo "byte-identical"
+
+      - name: The offline precache manifest matches the baked tree
+        run: python3 scripts/gen_precache.py --check
+
+      # PLAN acceptance test 4: a chrome key present in no i18n file falls back
+      # to a module's own English and renders unmarked inside a Dutch or French
+      # interface. Silent, so it gets a build gate rather than a code review.
+      - name: Every declared chrome key exists in en, nl and fr
+        run: python3 scripts/check_i18n.py
+
+      # Node is preinstalled on ubuntu-latest. No npm install, no package.json,
+      # no dependency: these are plain .mjs scripts, exactly like scripts/*.py.
+      - name: Run the browser-side tests
+        run: |
+          node --version
+          node scripts/test_i18n_marker.mjs
+          node scripts/test_stats.mjs
+          node scripts/test_zoom.mjs
+
+      # PLAN acceptance test 1 and phase 1's exit criterion: installs web/sw.js
+      # for real, cuts the network, and resolves all seven cities from cache.
+      - name: Cold cache, airplane mode, seven cities
+        run: node scripts/test_sw_offline.mjs
+
+      # Bust the service worker cache. sw.js ships the literal
+      # `const VERSION = "__CACHE_VERSION__"`; left unstamped the shell cache
+      # keeps one name for ever, the activate handler never sees a stale name
+      # to delete, and every deploy after the first serves the previous HTML.
+      # sw.js is never renamed (CLAUDE.md); the cache inside it rotates.
+      - name: Stamp the service worker cache version
+        run: python3 scripts/stamp_cache_version.py ./web
+
+      - name: Pre-flight
+        run: python3 scripts/ghpages_preflight.py ./web --repo-name behere
+
+      # This repo is public and every runtime source is keyless by design
+      # (PLAN acceptance test 7). Any credential-shaped string in the tree
+      # about to be published is a bug that stops the deploy.
+      - name: Refuse to publish a credential
+        run: |
+          if grep -rInE '(api[_-]?key|access[_-]?token|client[_-]?secret|Authorization:)[[:space:]]*[=:][[:space:]]*["'"'"'][^"'"'"']+' web/ ; then
+            echo "::error::credential-shaped string found in web/"
+            exit 1
+          fi
+          echo "no credentials in web/"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # Re-exported so the smoke job can read the URL Pages actually assigned.
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # The last gate, and the only one that reads what the public actually gets.
+  # Everything above proves the artifact was correct; this proves it was
+  # served. scripts/smoke_test.sh checks the shell AND one shard per pilot
+  # city, because a shell-only deploy returns 200 on every shell asset.
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # deploy-pages returns when GitHub reports the deployment complete, which
+      # is a moment before the edge is guaranteed to serve it. Poll rather than
+      # sleep a fixed amount, so a first-ever deploy does not go red for a
+      # propagation lag that fixes itself in twenty seconds.
+      - name: Wait for the edge to serve the new deployment
+        run: |
+          set -uo pipefail
+          url="${{ needs.deploy.outputs.page_url }}"
+          for i in $(seq 1 30); do
+            code=$(curl -sSL -o /dev/null -w '%{http_code}' "$url" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "serving after ${i} attempt(s)"
+              exit 0
+            fi
+            echo "attempt $i: HTTP $code"
+            sleep 5
+          done
+          echo "::error::$url never returned 200"
+          exit 1
+
+      - name: Smoke test the deployed site
+        run: bash scripts/smoke_test.sh "${{ needs.deploy.outputs.page_url }}"

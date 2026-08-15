@@ -1,0 +1,281 @@
+name: Refresh baked data
+
+# WHY THIS OPENS A PULL REQUEST AND NOT A COMMIT
+#
+# web/data/ is gitignored: the shards are derived, and committing 6.6 MB of
+# them on every refresh would put a large diff in the history for no gain. So
+# there is nothing in the working tree for `git status` to notice after a
+# rebake, and "commit if dirty" would never fire.
+#
+# What is tracked instead is .github/bake.fingerprint.json: one hash per
+# emitted file, plus the aggregate. bake.py is idempotent, so that fingerprint
+# is a pure function of the upstream bytes. Identical upstream data gives a
+# byte-identical fingerprint, the comparison below finds no change, and the
+# run ends with no branch, no commit and no pull request. Changed upstream
+# data gives a different fingerprint and opens exactly one PR, whose diff
+# names every shard that moved.
+#
+# Merging that PR pushes to main, which is what makes deploy.yml rebake and
+# publish. This workflow never deploys and never touches Pages.
+#
+# WHAT CAN ACTUALLY CHANGE: the two Statbel archives are pinned by filename
+# (20250401 addresses, 20250101 sectors) and are finished publications, so
+# they never move. The four NAP GTFS feeds are live. In practice this workflow
+# is a transit-stop watcher, and that is why the GTFS zips are deliberately
+# left out of the source cache (see deploy.yml).
+
+on:
+  schedule:
+    # 04:17 UTC on the 3rd of each month. Off the hour on purpose: Statbel and
+    # the NAP are slow enough without joining everyone else's cron.
+    - cron: "17 4 3 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Its own group. A scheduled refresh must never queue behind, or hold up, a
+# Pages deploy: the two do unrelated work.
+concurrency:
+  group: refresh-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Restore only, never save. deploy.yml owns this cache key; a second
+      # writer would only ever race for a key that is immutable once written.
+      # A cold restore here just means the two pinned archives are fetched
+      # again, which is correct, only slower.
+      - name: Restore the pinned 2025 source archives
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache/bake
+            !.cache/bake/gtfs_*
+          key: behere-bake-TF_RGN_ADDRESSES_STAT_SECTORS_20250401-sh_statbel_statistical_sectors_31370_20250101-v1
+
+      - name: Bake the seven pilot cities
+        run: python3 scripts/bake.py --out web/data --cache-dir .cache/bake
+
+      # Gate first, fingerprint second. A partial bake produces a different
+      # fingerprint just as reliably as a real upstream change does, and
+      # proposing one as if it were news is worse than failing loudly.
+      - name: Fingerprint the baked tree
+        id: fp
+        run: |
+          python3 - <<'PY'
+          import gzip, hashlib, json, os
+
+          ROOT = "web/data"
+          OUT = ".github/bake.fingerprint.json"
+          BUDGET = 3145728
+          PILOTS = ["21004", "25121", "35013", "44021", "62063", "81001", "92003"]
+          MIN_GRID = 200
+
+          def normalised(rel, blob):
+              """meta.json carries provenance dates: `built`, and `retrieved`
+              on each source. They record WHEN the bake ran, not WHAT it
+              produced, and `built` is max(retrieved), so re-fetching a live
+              GTFS feed moves it every single run. Hashing them would open a
+              pull request every month with nothing in it, which is how a data
+              refresh workflow becomes noise and then gets ignored."""
+              if rel != "meta.json":
+                  return blob
+              doc = json.loads(blob.decode("utf-8"))
+              doc.pop("built", None)
+              for source in doc.get("sources", []):
+                  source.pop("retrieved", None)
+              return json.dumps(doc, sort_keys=True,
+                                separators=(",", ":")).encode("utf-8")
+
+          fail = []
+          if not os.path.isdir(ROOT):
+              print("::error::%s does not exist: the bake did not run" % ROOT)
+              raise SystemExit(1)
+
+          hashes, total_gz, total_raw = {}, 0, 0
+          for dirpath, dirnames, filenames in os.walk(ROOT):
+              dirnames.sort()
+              for name in sorted(filenames):
+                  path = os.path.join(dirpath, name)
+                  rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+                  blob = open(path, "rb").read()
+                  total_raw += len(blob)
+                  total_gz += len(gzip.compress(blob, 9, mtime=0))
+                  hashes[rel] = hashlib.sha256(
+                      normalised(rel, blob)).hexdigest()[:12]
+
+          for rel in ("meta.json", "precache.json", "municipalities.json",
+                      "nis_history.json", "i18n/en.json"):
+              if rel not in hashes:
+                  fail.append("missing shared file %s" % rel)
+          for nis in PILOTS:
+              for name in ("meta.json", "streets.json", "sector.geojson"):
+                  if "%s/%s" % (nis, name) not in hashes:
+                      fail.append("missing %s/%s" % (nis, name))
+          grid = [r for r in hashes if r.startswith("grid/")]
+          if len(grid) < MIN_GRID:
+              fail.append("only %d grid shards (expected at least %d)"
+                          % (len(grid), MIN_GRID))
+          if total_gz > BUDGET:
+              fail.append("shipped tree is %d B gzipped, over the %d B budget"
+                          % (total_gz, BUDGET))
+
+          meta = json.load(open(os.path.join(ROOT, "meta.json")))
+          if meta.get("vintage") != "2025-01-01":
+              fail.append("meta.json vintage is %r, expected '2025-01-01'"
+                          % meta.get("vintage"))
+
+          if fail:
+              for line in fail:
+                  print("::error::%s" % line)
+              raise SystemExit(1)
+
+          tree = hashlib.sha256()
+          for rel in sorted(hashes):
+              tree.update(rel.encode("utf-8"))
+              tree.update(b"\0")
+              tree.update(hashes[rel].encode("ascii"))
+              tree.update(b"\n")
+
+          # Byte totals are deliberately NOT in the fingerprint. gzip of
+          # meta.json includes the `built` date, so a byte total is not a
+          # stable function of the upstream data. The true totals are reported
+          # in the pull request body and the step summary instead.
+          doc = {
+              "vintage": meta["vintage"],
+              "contract": meta["contract"],
+              "files": len(hashes),
+              "grid_shards": len(grid),
+              "tree_sha256": tree.hexdigest(),
+              "files_sha256": {k: hashes[k] for k in sorted(hashes)},
+          }
+          new = json.dumps(doc, sort_keys=True, indent=2,
+                           ensure_ascii=False) + "\n"
+
+          old_doc = {}
+          if os.path.exists(OUT):
+              with open(OUT, encoding="utf-8") as fh:
+                  old_raw = fh.read()
+              try:
+                  old_doc = json.loads(old_raw)
+              except ValueError:
+                  old_raw = ""
+          else:
+              old_raw = ""
+
+          changed = old_raw != new
+          print("files      %d" % len(hashes))
+          print("grid       %d shards" % len(grid))
+          print("raw        %d B" % total_raw)
+          print("gzipped    %d B of %d allowed (%.1f%% used)"
+                % (total_gz, BUDGET, 100.0 * total_gz / BUDGET))
+          print("tree       %s" % doc["tree_sha256"])
+          print("changed    %s" % changed)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("changed=%s\n" % ("true" if changed else "false"))
+              fh.write("tree=%s\n" % doc["tree_sha256"][:12])
+
+          summary = []
+          if changed:
+              with open(OUT, "w", encoding="utf-8") as fh:
+                  fh.write(new)
+              old_files = old_doc.get("files_sha256", {})
+              added = sorted(set(hashes) - set(old_files))
+              removed = sorted(set(old_files) - set(hashes))
+              moved = sorted(r for r in set(hashes) & set(old_files)
+                             if hashes[r] != old_files[r])
+              summary.append("The scheduled bake produced different bytes from "
+                             "the fingerprint on main.\n")
+              summary.append("| change | count |\n|---|---|")
+              summary.append("| shards changed | %d |" % len(moved))
+              summary.append("| shards added | %d |" % len(added))
+              summary.append("| shards removed | %d |" % len(removed))
+              summary.append("| files total | %d |" % len(hashes))
+              summary.append("| grid shards | %d |" % len(grid))
+              summary.append("| gzipped | %d B of %d (%.1f%%) |"
+                             % (total_gz, BUDGET, 100.0 * total_gz / BUDGET))
+              summary.append("| vintage | %s |\n" % doc["vintage"])
+              if not old_files:
+                  summary.append("There was no fingerprint on main, so this PR "
+                                 "establishes the baseline.\n")
+              for label, group in (("changed", moved), ("added", added),
+                                   ("removed", removed)):
+                  if group:
+                      summary.append("**%s (%d)**\n" % (label, len(group)))
+                      summary.append("```")
+                      summary.extend(group[:40])
+                      if len(group) > 40:
+                          summary.append("... and %d more" % (len(group) - 40))
+                      summary.append("```\n")
+              summary.append(
+                  "The two Statbel archives are pinned by filename and cannot "
+                  "move, so a change here is almost always the four NAP GTFS "
+                  "feeds: stops added, moved or withdrawn by an operator.\n")
+              summary.append(
+                  "Merging this rebuilds and republishes the site. Nothing is "
+                  "deployed until it is merged.")
+          else:
+              summary.append("No upstream change. No pull request was opened.")
+
+          body = "\n".join(summary)
+          with open(os.environ["RUNNER_TEMP"] + "/pr-body.md", "w",
+                    encoding="utf-8") as fh:
+              fh.write(body)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a",
+                    encoding="utf-8") as fh:
+              fh.write("### Data refresh\n\n" + body + "\n")
+          PY
+
+      # Everything below is skipped on a no-op run: no branch is created, no
+      # commit is made, no pull request is opened.
+      - name: Open a pull request
+        if: steps.fp.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: data-refresh/${{ steps.fp.outputs.tree }}
+        run: |
+          set -euo pipefail
+
+          # The branch name is the tree hash, so re-running against unchanged
+          # upstream data lands on the branch that already exists rather than
+          # opening a second pull request for the same content.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "branch $BRANCH already exists; a PR for this exact upstream state is already open or merged"
+            exit 0
+          fi
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            echo "a PR for $BRANCH is already open"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          # Only the fingerprint is committed. The shards stay gitignored, and
+          # `git add` on a single explicit path cannot pick them up by accident.
+          git add .github/bake.fingerprint.json
+          git commit -m "data: upstream bake changed (tree ${{ steps.fp.outputs.tree }})"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head "$BRANCH" \
+            --title "Data refresh: upstream bake changed" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
+
+      - name: No upstream change
+        if: steps.fp.outputs.changed != 'true'
+        run: echo "The bake reproduced the fingerprint on main byte for byte. Nothing to propose."

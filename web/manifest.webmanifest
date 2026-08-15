@@ -1,0 +1,35 @@
+{
+  "name": "BeHERE",
+  "short_name": "BeHERE",
+  "description": "Where you are standing in Belgium: address, neighbourhood, transit and what is open now. Works offline.",
+  "id": "/behere/",
+  "start_url": "/behere/",
+  "scope": "/behere/",
+  "display": "standalone",
+  "orientation": "any",
+  "lang": "en",
+  "dir": "ltr",
+  "theme_color": "#1d3a5a",
+  "background_color": "#ffffff",
+  "categories": ["travel", "navigation", "utilities"],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

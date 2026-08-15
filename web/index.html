@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en" data-app="behere">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>BeHERE</title>
+<meta name="description" content="Where you are standing in Belgium: address, neighbourhood, transit and what is open now. Works offline.">
+
+<!-- PWA head tags, from the static-pwa-ghpages template. Every path here is
+     RELATIVE: the site is a project page served under /behere/, so a single
+     leading slash would 404. -->
+
+<!-- Content-Security-Policy. GitHub Pages cannot set HTTP headers, so this meta
+     tag is the ONLY CSP this app will ever have. connect-src lists exactly the
+     nine runtime hosts of PLAN section 3.1 / CONTRACT section 10.0 and nothing
+     more; anything not on that list cannot be called, by construction.
+     Note: frame-ancestors, sandbox and report-to are header-only and are
+     silently ignored in a meta tag, so clickjacking protection is a known and
+     accepted gap on Pages (closing it needs a fronting CDN).
+     script-src is 'self' with no 'unsafe-inline', which is why the service
+     worker registration lives in app/sw-register.js instead of inline here. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               connect-src 'self'
+                 https://api-management-discovery-production.azure-api.net
+                 https://api.irail.be
+                 https://opendata-api.statbel.fgov.be
+                 https://geoservices.wallonie.be
+                 https://geo.onroerenderfgoed.be
+                 https://www.odwb.be
+                 https://data.stad.gent
+                 https://opendata.brussels.be
+                 https://catalog.datastore.brussels;
+               img-src 'self' data:;
+               style-src 'self' 'unsafe-inline';
+               script-src 'self';
+               base-uri 'none';
+               object-src 'none';
+               form-action 'none'">
+
+<meta name="theme-color" content="#0f1216" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#1d3a5a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="BeHERE">
+
+<link rel="stylesheet" href="app/app.css">
+<script src="app/sw-register.js" defer></script>
+<script type="module" src="app/main.js"></script>
+</head>
+
+<body>
+
+<!-- ============================================================= header -->
+<header class="app-bar">
+  <h1>Be<b>HERE</b></h1>
+  <div class="langs" role="group" aria-label="Language">
+    <button type="button" data-lang="nl" aria-pressed="false">nl</button>
+    <button type="button" data-lang="fr" aria-pressed="false">fr</button>
+    <button type="button" data-lang="en" aria-pressed="false">en</button>
+    <button type="button" data-lang="auto" aria-pressed="true">auto</button>
+  </div>
+</header>
+
+<div class="status">
+  <button type="button" class="btn" id="locate" data-i18n="locate.action">Find where I am</button>
+  <p id="locate-status" role="status" aria-live="polite" data-i18n="locate.idle">
+    Location not requested yet.
+  </p>
+</div>
+
+<p class="offline-bar" id="offline-bar" hidden data-i18n="offline.bar">
+  You are offline. Everything below comes from what is stored on this device.
+</p>
+
+<p class="ios-hint" id="ios-hint" hidden data-i18n="install.ios">
+  To install BeHERE on this iPhone or iPad: Share, then Add to Home Screen.
+</p>
+
+<!--
+  ================================================================= bands
+
+  FOUR BANDS STACKED ON ONE SCREEN, then a zoom-out section. No tabs, no
+  dashboard, no routing (PLAN section 6, "Screen model").
+
+  DOM CONTRACT between this shell and the band modules:
+
+    section.band#band-<id>       [data-band] [data-state=idle|locating|ready|
+                                 partial|empty|denied|error]
+      header > h2#h-<id>         the band title, data-i18n="band.<id>"
+      p.band-status              the question the band answers, then its status
+      div.band-body              [data-role="body"] THE MOUNT POINT. The band
+                                 module owns everything inside it and clears it
+                                 on its first paint.
+      p.src                      [data-role="src"] source and vintage line,
+                                 written by main.js from web/data/meta.json
+                                 via ctx.setSources() (acceptance test 8).
+
+  A band module is mounted as mount(bodyEl, ctx) and refreshed as update(ctx).
+
+  The copy already inside each .band-body is a PLACEHOLDER: it survives until
+  that band's module paints over it, and it stays for good if the module is not
+  in this build. That is why it is written out in full rather than left empty.
+  First paint is never blank, and a band with no module still reads as a
+  deliberate, styled panel instead of a hole in the page.
+-->
+
+<main>
+
+  <!-- ------------------------------------------------------------ HERE -->
+  <section class="band" id="band-here" data-band="here" data-state="idle"
+           aria-labelledby="h-here">
+    <header>
+      <h2 id="h-here" data-i18n="band.here">Here</h2>
+      <p class="band-status" data-i18n="band.here.q">Where am I?</p>
+    </header>
+    <div class="band-body" data-role="body">
+      <p class="quiet" data-i18n="empty.here.idle">
+        Waiting for your location. Nothing is sent anywhere: the addresses,
+        neighbourhoods and municipalities of the seven pilot cities are already
+        stored on this device.
+      </p>
+    </div>
+    <p class="src" data-role="src" hidden></p>
+  </section>
+
+  <!-- ---------------------------------------------------------- AROUND -->
+  <section class="band" id="band-around" data-band="around" data-state="idle"
+           aria-labelledby="h-around">
+    <header>
+      <h2 id="h-around" data-i18n="band.around">Around</h2>
+      <p class="band-status" data-i18n="band.around.q">What is around me?</p>
+    </header>
+    <div class="band-body" data-role="body">
+      <p class="quiet" data-i18n="empty.around.idle">
+        Heritage, tourism, parks, markets, recycling and charging points appear
+        here, sorted by real distance, once your position is known.
+      </p>
+    </div>
+    <p class="src" data-role="src" hidden></p>
+  </section>
+
+  <!-- -------------------------------------------------------------- GO -->
+  <section class="band" id="band-go" data-band="go" data-state="idle"
+           aria-labelledby="h-go">
+    <header>
+      <h2 id="h-go" data-i18n="band.go">Go</h2>
+      <p class="band-status" data-i18n="band.go.q">How do I get there?</p>
+    </header>
+    <div class="band-body" data-role="body">
+      <p class="quiet" data-i18n="empty.go.idle">
+        The nearest stops of De Lijn, TEC, STIB-MIVB and NMBS-SNCB are stored on
+        this device. Live departures need a network.
+      </p>
+    </div>
+    <p class="src" data-role="src" hidden></p>
+  </section>
+
+  <!-- ------------------------------------------------------------- NOW -->
+  <section class="band" id="band-now" data-band="now" data-state="idle"
+           aria-labelledby="h-now">
+    <header>
+      <h2 id="h-now" data-i18n="band.now">Now</h2>
+      <p class="band-status" data-i18n="band.now.q">What can I do?</p>
+    </header>
+    <div class="band-body" data-role="body">
+      <p class="quiet" data-i18n="empty.now.idle">
+        What is open, collected or happening today, once your position is known.
+      </p>
+    </div>
+    <p class="src" data-role="src" hidden></p>
+  </section>
+
+  <!-- ------------------------------------------------------------- ZOOM
+       Province and country context. Deliberately NOT a comparator: no league
+       table, no ranking, no "your town versus theirs" (PLAN section 1).
+       Keys on nuts3 from <nis>/meta.json, never on the municipality NIS,
+       because no Statbel HVD table reaches municipality level (CONTRACT 10.3).
+  -->
+  <section class="band" id="band-zoom" data-band="zoom" data-state="idle"
+           aria-labelledby="h-zoom">
+    <header>
+      <h2 id="h-zoom" data-i18n="band.zoomout">Zoom out</h2>
+      <p class="band-status" data-i18n="band.zoomout.q">How does this fit in?</p>
+    </header>
+    <div class="band-body" data-role="body">
+      <p class="quiet" data-i18n="empty.zoomout.idle">
+        Context for the arrondissement and for Belgium appears here. It is
+        context, never a ranking.
+      </p>
+    </div>
+    <p class="src" data-role="src" hidden></p>
+  </section>
+
+</main>
+
+<!-- ============================================================= footer -->
+<footer class="app-foot">
+  <!-- Two labelled values rather than one sentence with punctuation baked into
+       the strings: "…, built" cannot be translated without also translating
+       the comma, and the three languages do not put it in the same place. -->
+  <p>
+    <span data-i18n="foot.vintage">Data vintage</span>
+    <time class="vintage" id="foot-vintage" datetime="2025-01-01">2025-01-01</time>
+    ·
+    <span data-i18n="foot.built">built</span>
+    <span class="vintage" id="foot-built">—</span>
+  </p>
+
+  <!-- What is actually stored on this device. sw.js precaches the seven cities
+       at install; this line is the honest report of whether that finished, so
+       the app never promises an offline capability it does not have (PLAN
+       section 11, "a cold start must work with no cache"). Hidden until the
+       worker has answered, because a wrong claim is worse than no claim. -->
+  <p class="quiet" id="offline-stored" hidden></p>
+
+  <details id="sources">
+    <summary>
+      <span data-i18n="action.sources">Sources and vintages</span>
+      <span class="count" id="sources-count"></span>
+    </summary>
+    <div class="disclosure-body">
+      <ul id="sources-list">
+        <li class="quiet" data-i18n="empty.sources">
+          The source list loads with the data manifest.
+        </li>
+      </ul>
+    </div>
+  </details>
+
+  <p class="endonym" data-i18n="flag.endonym">
+    Street and place names are shown in their official local language.
+  </p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Not found — BeHERE</title>
+
+<!-- BeHERE is ONE screen. There is no history router and no deep link, so this
+     page deliberately does NOT do the spa-github-pages redirect dance: an
+     automatic bounce would hide a genuinely missing shard behind a reload loop
+     and make a broken deploy look healthy.
+
+     The one script below only computes the base path (the site lives under
+     /behere/, so a relative link cannot work from an arbitrary depth) and fills
+     in the link. It is pinned by hash rather than allowed with 'unsafe-inline':
+     an external file cannot be referenced from an unknown depth either. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'none'; img-src 'self' data:;
+               style-src 'self' 'unsafe-inline';
+               script-src 'sha256-03/eY0AEzDc+v3R3bw5N7W9cGYNQLIgKXG/CrJe07jI=';
+               base-uri 'none'; object-src 'none'; form-action 'none'">
+
+<meta name="theme-color" content="#0f1216" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#1d3a5a">
+<style>
+  /* Self-contained: app.css sits under the base path and cannot be linked from
+     an unknown depth. This is a deliberate, tiny duplicate of its tokens. */
+  :root { color-scheme: light dark; --bg:#fff; --ink:#14181d; --muted:#565d67; --accent:#1d3a5a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1216; --ink:#e7eaee; --muted:#a4adb8; --accent:#7fa9d9; }
+  }
+  body {
+    margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5; display: grid; place-items: center; min-height: 80vh;
+  }
+  .card { max-width: 30rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 .4rem; }
+  p { margin: .5rem 0; }
+  .sub { color: var(--muted); font-size: .875rem; }
+  a { color: var(--accent); }
+</style>
+</head>
+
+<body>
+<div class="card">
+  <h1>That page is not part of BeHERE</h1>
+  <p class="sub">
+    BeHERE is a single screen. If you followed a link to a data file that no
+    longer exists, the data vintage has probably moved on.
+  </p>
+  <p><a id="home" href="./">Open BeHERE</a></p>
+</div>
+<script>
+(function () {
+  var seg = location.pathname.split("/");
+  var base = seg.length > 1 && seg[1] ? "/" + seg[1] + "/" : "/";
+  var a = document.getElementById("home");
+  a.setAttribute("href", base);
+  a.textContent = location.host + base;
+}());
+</script>
+</body>
+</html>

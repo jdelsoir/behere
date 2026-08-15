@@ -1,0 +1,885 @@
+/* BeHERE — the whole stylesheet.
+ *
+ * Restrained and system-native by instruction: the system font stack, no web
+ * fonts, no icon font, no CDN, no framework, and no animation beyond the
+ * disclosure triangle. Narrow phone first; the single breakpoint only widens
+ * the measure.
+ *
+ * THE LOAD-BEARING IDEA
+ * A city that publishes almost nothing must read as CALM, not broken.
+ * Ottignies-Louvain-la-Neuve ships zero local datasets, and it is in the pilot
+ * set precisely for that reason. So an absent layer is never an error state:
+ * `.quiet` gets no red, no warning glyph, no dashed "missing" border. It gets
+ * quiet prose on a plain tint, sized like a footnote, and it names what is not
+ * published. The only colour that leaves the neutral palette is the amber of
+ * `.asof` and `.offline-bar`, which mark data that is real but old. "Old" and
+ * "absent" are different claims and the app must never blur them.
+ *
+ * VOCABULARY
+ * The band modules render their own markup into their band body and emit a
+ * fixed set of class names. This file styles that set. The modules own the
+ * markup; the shell owns every pixel of style, and no module sets an inline
+ * style attribute. Section 4 is that shared vocabulary.
+ */
+
+/* ================================================================ tokens */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --surface: #f4f5f7;
+  --surface-2: #eceef1;
+  --ink: #14181d;
+  --muted: #565d67;          /* 6.6:1 on --bg */
+  --line: #d7dbe0;
+  --line-strong: #b4bac2;
+  --accent: #1d3a5a;         /* also manifest theme_color and the icon field */
+  --accent-ink: #ffffff;
+  --accent-weak: #e7edf5;
+  --stale: #6b5a12;          /* "as of" and last-known. Never red. */
+  --stale-bg: #fbf5e0;
+
+  --radius: 8px;
+  --measure: 44rem;
+
+  --step--1: clamp(0.78rem, 0.76rem + 0.1vw, 0.84rem);
+  --step-0: clamp(0.95rem, 0.92rem + 0.15vw, 1.03rem);
+  --step-1: clamp(1.1rem, 1.04rem + 0.3vw, 1.28rem);
+  --step-2: clamp(1.35rem, 1.22rem + 0.6vw, 1.7rem);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1216;
+    --surface: #171b21;
+    --surface-2: #1e242c;
+    --ink: #e7eaee;
+    --muted: #a4adb8;        /* 7.4:1 on --bg */
+    --line: #272d36;
+    --line-strong: #3a424d;
+    --accent: #7fa9d9;
+    --accent-ink: #0f1216;
+    --accent-weak: #182535;
+    --stale: #d9c675;
+    --stale-bg: #221f12;
+  }
+}
+
+/* ================================================================== base */
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  padding: 0 1rem 4rem;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+               Arial, "Noto Sans", sans-serif;
+  font-size: var(--step-0);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+body > * {
+  max-width: var(--measure);
+  margin-inline: auto;
+}
+
+h1, h2, h3, h4 {
+  line-height: 1.2;
+  font-weight: 600;
+  margin: 0;
+}
+
+p { margin: 0.4em 0; }
+
+ul, ol, dl, dd { margin: 0; padding: 0; }
+
+a {
+  color: inherit;
+  text-underline-offset: 0.18em;
+  text-decoration-thickness: 1px;
+}
+
+a:hover { text-decoration-thickness: 2px; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+abbr[title] { text-decoration: none; cursor: help; }
+
+/* ================================================================ header */
+
+.app-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.9rem;
+  padding: 1.1rem 0 0.7rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.app-bar h1 {
+  font-size: var(--step-1);
+  letter-spacing: -0.01em;
+  margin-right: auto;
+}
+
+.app-bar h1 b { font-weight: 600; color: var(--accent); }
+
+/* Language switcher: four flat buttons. NL, FR, EN and auto. DE is never
+   offered here; it exists in the label resolver only. */
+.langs {
+  display: flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.langs button {
+  min-height: 2.25rem;
+  padding: 0 0.7rem;
+  border: 0;
+  border-left: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--step--1);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.langs button:first-child { border-left: 0; }
+
+.langs button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* ================================================================ status */
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0;
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.status p { margin: 0; }
+
+.btn {
+  min-height: 2.5rem;
+  padding: 0 0.95rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: var(--step--1);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn[disabled] { opacity: 0.55; cursor: default; }
+
+.btn.secondary {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line-strong);
+  font-weight: 500;
+}
+
+/* ================================================ 4. BAND VOCABULARY */
+
+/* --- the band ---------------------------------------------------------- */
+
+.band {
+  display: block;
+  padding: 1.35rem 0 0.35rem;
+  border-top: 1px solid var(--line);
+}
+
+main > .band:first-child { border-top: 0; }
+
+.band > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 0.65rem;
+  margin-bottom: 0.5rem;
+}
+
+.band > header h2 {
+  font-size: var(--step-2);
+  letter-spacing: -0.015em;
+}
+
+/* The question the band answers, and later whatever it is doing. Same slot,
+   because they are the same thing: what this band is giving you right now. */
+.band-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+/* While a fix is resolving, dim the previous answer rather than clearing it.
+   An old answer with a hint of motion beats an empty screen. */
+.band[data-state="locating"] .band-body { opacity: 0.6; }
+
+.band-body { display: block; }
+
+/* --- the answer -------------------------------------------------------- */
+
+/* The largest string in the band, and usually the only reason the app was
+   opened: the street, the municipality, the next departure. */
+.answer {
+  margin: 0.15rem 0 0;
+  font-size: var(--step-1);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.house {
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.1em;
+}
+
+/* A name in its own language, carrying a lang attribute. Never restyled by
+   language: a Dutch street name is not a foreign word on a Dutch street. */
+.name { }
+
+.name[data-state="pending"] { color: var(--muted); }
+
+/* Codes are data, not prose: tabular, monospace, recessed, never bold. */
+.code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.measure {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.sub {
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.sub .code { font-size: 0.95em; }
+
+/* Key/value facts: sector, postcode, NIS, district, province, region. */
+.facts {
+  margin: 0.6rem 0 0;
+  display: grid;
+  grid-template-columns: minmax(6.5rem, auto) 1fr;
+  gap: 0.25rem 0.9rem;
+  font-size: var(--step--1);
+}
+
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; min-width: 0; }
+
+/* A list of things around you: stops, POI, opportunities. Label left, distance
+   or time right, hairline between. */
+.rows { list-style: none; margin: 0.5rem 0 0; }
+
+.rows li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.rows li:first-child { border-top: 0; }
+.rows .name { flex: 1 1 auto; min-width: 0; }
+
+.rows .meta {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+/* A live number, as opposed to a scheduled one. The single accent in a band. */
+.rows .meta.live { color: var(--accent); font-weight: 600; }
+
+/* --- the calm empty state --------------------------------------------- */
+
+/* THE IMPORTANT ONE. Used for a layer that publishes nothing, for a band whose
+   module is not in this build, and for a caveat. All three are ordinary
+   outcomes, so all three look the same and none of them looks like a fault. */
+.quiet {
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.8rem;
+  border-left: 2px solid var(--line-strong);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.quiet strong { color: var(--ink); font-weight: 600; }
+
+.band[data-state="empty"] > header h2,
+.band[data-state="error"] > header h2 { color: var(--muted); }
+
+/* --- honesty about age and language ------------------------------------ */
+
+/* Real data, but old: cached departures, last-known statistics. Amber, never
+   red, and it always carries a date. */
+.asof {
+  margin: 0.5rem 0 0;
+  padding: 0.55rem 0.8rem;
+  border-left: 2px solid var(--stale);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--stale-bg);
+  color: var(--stale);
+  font-size: var(--step--1);
+}
+
+/* One note per panel: street and place names are in their official local
+   language. Never one marker per street (CONTRACT 9.3): in English every one
+   of Ghent's 2,637 street names falls back, and 2,637 markers would be the app
+   complaining about its own policy. */
+.endonym {
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+/* The inline marker, only for munty, cat and ui. */
+.untranslated {
+  font-size: 0.7em;
+  vertical-align: super;
+  color: var(--muted);
+  margin-left: 0.15em;
+  cursor: help;
+}
+
+/* Acceptance test 8: every layer shows its source and its vintage date. */
+.src {
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.src::before {
+  content: "";
+  display: block;
+  width: 1.6rem;
+  border-top: 1px solid var(--line);
+  margin-bottom: 0.35rem;
+}
+
+.vintage {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --- zoom out ---------------------------------------------------------- */
+
+/* Province and country context. Not a comparator: no ranking, no league table,
+   no "your town versus theirs" (PLAN section 1, non-goals). */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 0.6rem;
+  margin: 0.6rem 0 0;
+  list-style: none;
+}
+
+.stats li {
+  padding: 0.6rem 0.7rem;
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+.stats .v {
+  display: block;
+  font-size: var(--step-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats .k { display: block; color: var(--muted); font-size: var(--step--1); }
+
+/* A figure the vintage guard refused. It carries no .v on purpose: an em dash
+   in the number slot reads as a rendering failure, while a label plus the
+   reason reads as the deliberate refusal it is (PLAN acceptance test 3). */
+.stats .stat--withheld {
+  background: none;
+  border: 1px dashed var(--line);
+}
+
+/* ============================================================ disclosure */
+
+/* The only motion in the app: a triangle rotating 90 degrees. */
+details {
+  margin-top: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+details > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.8rem;
+  cursor: pointer;
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+details > summary::-webkit-details-marker { display: none; }
+
+details > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 140ms ease;
+  transform-origin: 25% 50%;
+}
+
+details[open] > summary::before { transform: rotate(90deg); }
+
+details > summary .count {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.disclosure-body {
+  padding: 0.7rem 0.8rem 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+/* A disclosure holding a plain list, e.g. the source list or the count of
+   addresses here that belong to a municipality this release does not ship. */
+.disclosure-body ul { list-style: none; }
+.disclosure-body li { padding: 0.3rem 0; }
+.disclosure-body .quiet { margin-top: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  details > summary::before { transition: none; }
+}
+
+/* ============================================== 5. THE AROUND BAND */
+
+/* around.js renders one <details> layer per source, each with its own source
+   line and its own honest copy when it publishes nothing here. The four layer
+   states are the whole point of this band: only `--failed` is a fault. */
+
+/* Mounted inside the shell this is a <div> with no heading of its own, because
+   section.band#band-around already carries the <h2>. Mounted alone it is a
+   <section> and draws its own. One rule set serves both. */
+.around { display: block; }
+.around__title { margin: 0; font-size: var(--step-1); }
+
+.around__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 0.6rem; }
+.around__radius,
+.around__status { margin: 0; color: var(--muted); font-size: var(--step--1); }
+.around__layers { display: block; }
+.around__note { margin: 0.7rem 0 0; color: var(--muted); font-size: var(--step--1); }
+
+/* One <details> per source. The `details` rules in section 4 already give it a
+   border and a marker; this only spaces the stack. */
+.around-layer { margin-top: 0.45rem; }
+.around-layer:first-child { margin-top: 0.2rem; }
+
+.around-layer__summary { display: flex; align-items: center; gap: 0.55rem; }
+.around-layer__name { font-weight: 600; }
+
+.around-layer__count {
+  margin-left: auto;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.around-layer__body { padding: 0.7rem 0.8rem 0.8rem; border-top: 1px solid var(--line); }
+
+/* Published nothing here, or out of scope for this region by design. Both are
+   correct answers, so both stay quiet and neither is opened by default. */
+.around-layer--empty,
+.around-layer--absent { background: none; }
+
+.around-layer--empty > .around-layer__summary,
+.around-layer--absent > .around-layer__summary { color: var(--muted); font-weight: 500; }
+
+/* Could not be reached. Still not red: it is a caveat about the network, and
+   the copy says which source and how old the fallback is. */
+.around-layer--failed > .around-layer__summary { color: var(--stale); }
+
+.around-layer__missing,
+.around-layer__note {
+  margin: 0 0 0.2rem;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.around-list { list-style: none; margin: 0; }
+
+/* Distance first, right-aligned and tabular, so the eye runs down one column
+   of numbers in a list that is already sorted by that number. */
+.around-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.around-item:first-child { border-top: 0; }
+
+.around-item__dist {
+  flex: 0 0 4.25rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.around-item__body { flex: 1 1 auto; min-width: 0; }
+.around-item__name { font-weight: 500; }
+.around-item__link { color: var(--accent); }
+
+.around-item__cat,
+.around-item__detail {
+  display: block;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+/* "You are inside this": a heritage polygon or a protected zone containing the
+   user. The one place the band earns an accent. */
+.around-item__here {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: var(--step--1);
+}
+
+.around-src__name { font-weight: 500; }
+
+.around-src {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.around-src__vintage { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.around-flag {
+  font-size: 0.7em;
+  vertical-align: super;
+  color: var(--muted);
+  margin-left: 0.15em;
+  cursor: help;
+}
+
+/* Brussels regional catalogue: discovery only, licence unverified, and NOT
+   distance-sorted. Visually separated so it cannot be mistaken for a
+   distance-ranked result list. */
+.around-catalogue { margin-top: 0.7rem; padding-top: 0.6rem; border-top: 1px dashed var(--line); }
+.around-catalogue__lead { margin: 0 0 0.3rem; color: var(--muted); font-size: var(--step--1); }
+.around-catalogue__list { list-style: none; }
+.around-catalogue__item { padding: 0.3rem 0; font-size: var(--step--1); }
+.around-catalogue__name { font-weight: 500; }
+.around-catalogue__date { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ================================================== 6. THE GO BAND */
+
+/* go.js groups platforms under their parent station, then lists departures.
+   Times are the whole content, so every number is tabular and the live/
+   scheduled distinction is carried by weight and colour, never by an icon. */
+
+.go-stops { list-style: none; margin: 0.5rem 0 0; }
+
+.go-stop { padding: 0.6rem 0; border-top: 1px solid var(--line); }
+.go-stop:first-child { border-top: 0; }
+
+.go-stop-head { display: flex; align-items: baseline; gap: 0.6rem; }
+.go-name { font-weight: 600; flex: 1 1 auto; min-width: 0; }
+
+.go-op {
+  flex: 0 0 auto;
+  font-size: var(--step--1);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.go-dist {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.go-platforms { list-style: none; margin: 0.25rem 0 0; }
+.go-platform { padding: 0.15rem 0; font-size: var(--step--1); color: var(--muted); }
+
+.go-deps-wrap { margin-top: 0.35rem; }
+.go-deps { list-style: none; margin: 0; }
+
+.go-dep {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.3rem 0;
+  font-size: var(--step--1);
+}
+
+.go-line {
+  flex: 0 0 auto;
+  min-width: 2.4rem;
+  padding: 0.05rem 0.35rem;
+  background: var(--surface-2);
+  border-radius: 4px;
+  text-align: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.go-dest { flex: 1 1 auto; min-width: 0; }
+.go-time { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 600; }
+.go-rel { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+/* A real-time delay. The single accent in the band, because it is the one
+   number that is not on the printed timetable. */
+.go-delay { flex: 0 0 auto; color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Cancelled: struck through and recessed. No red, no icon; the strike is
+   unambiguous and survives a colour-blind reader and a greyscale screen. */
+.go-cancelled { text-decoration: line-through; color: var(--muted); }
+
+/* Timetable shown because live departures could not be reached, with its date.
+   Same amber as every other "real but old" statement in the app. */
+.go-asof {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.7rem;
+  border-left: 2px solid var(--stale);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--stale-bg);
+  color: var(--stale);
+  font-size: var(--step--1);
+}
+
+.go-alerts { list-style: none; margin: 0.5rem 0 0; }
+
+.go-alert {
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--step--1);
+}
+
+.go-alert-head { font-weight: 600; }
+.go-alert-body { margin: 0.2rem 0 0; color: var(--muted); }
+
+.go-note { margin: 0.5rem 0 0; color: var(--muted); font-size: var(--step--1); }
+
+.go-src { margin: 0.6rem 0 0; color: var(--muted); font-size: var(--step--1); }
+
+/* ================================================= 7. THE NOW BAND */
+
+/* now.js groups by kind (markets, waste collection, this weekend) and each
+   group states its own availability. Every state lives on data-*, not on a
+   modifier class, so the rules below key on the attribute.
+
+   The one colour decision worth stating: `unknown` is NOT a warning. A source
+   that publishes "Samedi / 9h - 17h" as prose rather than OSM syntax has not
+   failed, and the band refuses to guess an open/closed answer from it. It gets
+   the muted ink of a plain fact, and only genuinely stale data gets --stale. */
+
+.now-group { display: block; margin-top: 0.9rem; }
+.now-group:first-child { margin-top: 0.2rem; }
+
+.now-group-head {
+  margin: 0 0 0.35rem;
+  font-size: var(--step-0);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.now-items { list-style: none; margin: 0; }
+
+.now-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--line);
+}
+.now-item:first-child { border-top: 0; }
+
+.now-when {
+  flex: 0 0 auto;
+  min-width: 5.5rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.now-what { flex: 1 1 12rem; min-width: 0; }
+
+.now-where,
+.now-frac {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+/* Open, closed, or honestly unknown. */
+.now-open {
+  flex: 0 0 auto;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: var(--step--1);
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.now-open[data-open="open"] {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  color: var(--accent);
+}
+.now-open[data-open="closed"] { color: var(--muted); }
+.now-open[data-open="unknown"] { border-style: dashed; color: var(--muted); }
+
+/* "about", used where a rule was only partly readable. */
+.now-approx { color: var(--muted); font-size: var(--step--1); }
+
+/* The source's own words, kept verbatim, because they are the evidence for
+   whatever the line above claims. Never translated, never reformatted. */
+.now-raw {
+  display: block;
+  flex: 1 1 100%;
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: var(--step--1);
+  font-style: italic;
+}
+
+.now-note { margin: 0.35rem 0 0; }
+
+.now-asof {
+  margin: 0.5rem 0 0;
+  color: var(--stale);
+  font-size: var(--step--1);
+}
+
+.now-src { margin: 0.6rem 0 0; color: var(--muted); font-size: var(--step--1); }
+
+/* A whole band that could not be answered still reads as a deliberate panel. */
+.band[data-band="now"][data-state="empty"] .now-group-head { color: var(--muted); }
+
+/* ================================================================ notices */
+
+.offline-bar {
+  margin-top: 0.6rem;
+  padding: 0.55rem 0.8rem;
+  border-radius: var(--radius);
+  background: var(--stale-bg);
+  color: var(--stale);
+  font-size: var(--step--1);
+}
+
+/* Notice box: the iOS install hint (Safari has no beforeinstallprompt, so a
+   hint is the only install path there) and the service-worker update prompt. */
+.notice,
+.ios-hint {
+  margin-top: 0.8rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--accent-weak);
+  font-size: var(--step--1);
+}
+
+.notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.notice p { margin: 0; flex: 1 1 12rem; }
+
+/* ================================================================= footer */
+
+.app-foot {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--step--1);
+}
+
+.app-foot .vintage { color: var(--ink); }
+.app-foot .name { color: var(--ink); }
+.app-foot ul { list-style: none; }
+.app-foot li { padding: 0.3rem 0; }
+
+/* ================================================================ utility */
+
+[hidden] { display: none !important; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* =========================================================== wide screens */
+
+@media (min-width: 46rem) {
+  body { padding-inline: 2rem; }
+  .facts { grid-template-columns: 10rem 1fr; }
+}
+
+/* ================================ offline.html and any standalone shell page */
+
+.standalone {
+  display: grid;
+  place-items: center;
+  min-height: 70vh;
+}
+
+.standalone .card { max-width: 30rem; }
+.standalone h1 { font-size: var(--step-2); margin-bottom: 0.4rem; }
+.standalone .answer { margin-top: 1.4rem; }
