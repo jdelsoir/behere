@@ -299,6 +299,14 @@
     <button type="button" class="chip" data-layer="stops" aria-pressed="true">
       <span class="chip__swatch"></span><span data-i18n="map.layer.stops">Stops</span>
     </button>
+    <!-- The basemap is the one layer that is neither ours nor baked, and the
+         only one that tells a third party where the user is standing. It is on
+         by default, but that cost has to be refusable, so it gets a chip like
+         any other layer and the choice persists. Off is a complete map, not a
+         degraded one: every stroke above this line is drawn from this device. -->
+    <button type="button" class="chip" data-layer="basemap" aria-pressed="true">
+      <span class="chip__swatch"></span><span data-i18n="map.layer.basemap">Basemap</span>
+    </button>
   </div>
 
   <!-- Two states only, and the second is not an error style: "no tiles" is an

@@ -242,6 +242,40 @@ h.flush();
 ok(app.map.getLayers().cell === was, "and back again");
 
 
+head("10a. the basemap chip is a real refusal, and it persists");
+/* The basemap is the only layer that talks to a third party, so "off" has to be
+   reachable, honest and durable. Three claims, in order: the chip turns the
+   raster underlay off; the chip reports the MAP's tile state rather than the
+   click, so it cannot claim "on" while nothing is drawn; and the refusal is
+   written down, so a reload does not silently re-enable it. */
+const bmChip = doc.getElementById("layer-chips")
+  .querySelector('.chip[data-layer="basemap"]');
+ok(!!bmChip, "the basemap chip exists in the legend");
+ok(bmChip.getAttribute("aria-pressed") === "true", "and starts on, the shipped default");
+
+bmChip.dispatch("click", {});
+h.flush();
+ok(app.map.getTileState() === "off", "clicking it turns the raster underlay off");
+ok(bmChip.getAttribute("aria-pressed") === "false", "and the chip repaints from the map's state");
+ok(globalThis.localStorage.getItem("behere.tiles") === "off",
+   "the refusal is persisted, so a reload honours it");
+
+/* The vector map must be complete without tiles: this is the whole reason the
+   toggle is defensible. Every stroke below is drawn from this device. */
+ok(mapEl.querySelector(".map-cell").getAttribute("visibility") === "visible",
+   "the 1 km cell still draws with no basemap");
+ok(app.map.getLayers().sector === true, "and the sector layer is untouched by it");
+
+bmChip.dispatch("click", {});
+h.flush();
+ok(app.map.getTileState() !== "off", "clicking again restores it");
+ok(globalThis.localStorage.getItem("behere.tiles") === "on", "and that choice is persisted too");
+
+/* The basemap must never leak into the vector layer object map.setLayers()
+   consumes, or a stray key reaches the vector plane. */
+ok(!("basemap" in app.map.getLayers()),
+   "the basemap is not one of the map's vector layers");
+
 head("10b. a layer really leaves the DOM, since no CSS hides it any more");
 const markersEl = mapEl.querySelector(".map-markers");
 app.map.setLayer("stops", true); h.flush();

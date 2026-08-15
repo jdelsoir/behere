@@ -374,23 +374,20 @@ touch gestures and the dark theme are verified by eye, not by machine.
 
 Written down rather than left to be rediscovered. None of these blocks a deploy.
 
-1. **No user-facing basemap switch.** `map.js` exposes `setTilesEnabled()` and
-   nothing calls it, so a user who does not want to talk to OSM has only their
-   browser's data-saver setting. The first thing to fix.
-2. **No dark-mode toggle.** Dark follows `prefers-color-scheme` only. If a
+1. **No dark-mode toggle.** Dark follows `prefers-color-scheme` only. If a
    toggle is added, all three stylesheets need their `[data-theme]` blocks
    added together, or the theme will half-apply.
-3. **`--dock-height` has two writers**, `main.js` on `documentElement` and
+2. **`--dock-height` has two writers**, `main.js` on `documentElement` and
    `map.js` on `document.body`. Same value from the same call site and
    `.map-attrib` correctly reads body's, so it is benign duplication rather
    than drift, but it is one writer too many.
-4. **Two scripts stamp the service worker** and only `stamp_cache_version.py`
+3. **Two scripts stamp the service worker** and only `stamp_cache_version.py`
    is wired into CI. See *Before deploying*.
-5. **Six markup classes have no CSS rule**: `btn__label`, `btn__mark`,
+4. **Six markup classes have no CSS rule**: `btn__label`, `btn__mark`,
    `locate-status`, `offline-bar__mark`, `panel-head__text`, `sheet__note`.
    All are BEM hooks inside already-styled flex parents, and `.locate-status`
    is styled via its id. Cosmetically inert.
-6. **No browser in the test loop**, as above.
+5. **No browser in the test loop**, as above.
 
 ### Before deploying
 
@@ -491,15 +488,24 @@ This was a deliberate choice, taken with the cost on the table, and it is
 recorded as a risk in PLAN section 11 rather than buried. The request carries no
 query string, no cookie and no identifier of any kind.
 
-**The basemap turns itself off** when the browser reports `Save-Data` or
-`prefers-reduced-data: reduce`, and after three consecutive tile errors; the app
-then draws the baked vector layers alone and still answers every question. But
-be straight about the gap: **there is no user-facing switch for it yet.**
-`map.js` exposes `setTilesEnabled()` on its handle and nothing calls it, so a
-user who simply does not want to talk to OSM has no control in the interface,
-only a browser setting. The three chips on the map toggle the *vector* layers
-(cell, sector, stops), not the raster. That is the honest state of it, and it is
-the first thing to fix.
+**The basemap can be refused, and the refusal sticks.** A fourth chip in the map
+legend, next to the three vector layers, toggles the raster underlay. It ships
+**on**, which was a deliberate decision taken with the privacy cost on the table,
+but a cost that cannot be declined is not a cost, it is a condition. Turning it
+off writes `behere.tiles=off` to `localStorage`, so a reload honours it rather
+than quietly re-enabling it.
+
+The chip reports the *map's* tile state, never the click, so it cannot claim
+"on" while nothing is being drawn. That matters because the basemap also turns
+itself off when the browser reports `Save-Data` or `prefers-reduced-data:
+reduce`, and after three consecutive tile errors. In every one of those cases
+the app draws the baked vector layers alone and still answers every question:
+turning the basemap off produces a complete map, not a degraded one.
+
+Covered by `scripts/test_integration.mjs` section 10a, which asserts the toggle
+works, that the chip follows the map rather than the click, that the choice
+persists, that the vector layers still draw without it, and that `basemap` never
+leaks into the vector-layer object `map.setLayers()` consumes.
 
 ### Vendored assets: fonts, icons and the basemap
 

@@ -65,7 +65,7 @@ The decisive property of each source is whether a browser on a `github.io` origi
 | **Brussels regional catalogue** | `https://catalog.datastore.brussels/geonetwork/srv/eng/q?_content_type=json` | `*` | 544 records. The `/api/search` path returns 403, use this one |
 | **OpenStreetMap raster basemap** *(added 15 August 2026)* | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | n/a, it is an `<img>` | ODbL 1.0. The **only** runtime source that is not fetched with `fetch()`, so CORS does not apply and it is in `img-src`, never `connect-src`. Terms below are conditions of use, not preferences |
 
-#### The basemap, and the four conditions attached to it
+#### The basemap, and the five conditions attached to it
 
 Added on 15 August 2026 with the map-first revamp (section 6). It is the one
 layer in this app that is neither ours nor baked, and it is the one layer that
@@ -94,6 +94,15 @@ choice, taken with the costs on the table, and it is paid for as follows.
    sector polygons, streets and stops. In airplane mode the tiles simply never
    arrive, and acceptance test 1 is unaffected because it never depended on
    them. Already-loaded tiles are kept and stay attributed.
+5. **The user can refuse it, and the refusal sticks.** *(Added 15 August 2026,
+   closing the one gap the revamp shipped with.)* A fourth chip in the map
+   legend toggles the raster underlay. It ships **on**, which is the decision
+   that was taken, but a cost that cannot be declined is not a cost, it is a
+   condition. The choice persists in `localStorage` under `behere.tiles`, so a
+   reload honours it. The chip repaints from the map's own tile state rather
+   than from the click, so it can never claim "on" while nothing is drawn, and
+   `basemap` is deliberately kept out of the vector-layer object that
+   `map.setLayers()` consumes. Covered by `scripts/test_integration.mjs` §10a.
 
 The honest cost is recorded in section 11: a tile request tells OSM's CDN a
 1 km-ish position and an IP address, and that request is made by the browser

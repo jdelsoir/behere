@@ -464,6 +464,10 @@ function paintControlLabels() {
       "2025 statistical sectors, from {nis}/sector.geojson").replace("{nis}", nis || "…"),
     stops: chromeText("map.layer.stops.title",
       "Baked NAP GTFS stops from the loaded shard"),
+    basemap: chromeText("map.layer.basemap.title",
+      "OpenStreetMap tiles. The only layer fetched from a third party, "
+      + "and the only one that reveals roughly where you are. Turn it off and "
+      + "everything else still draws, from this device."),
   };
   for (const chip of $$("#layer-chips .chip")) {
     const t = titles[chip.dataset.layer];
@@ -1214,20 +1218,50 @@ function mapStrings() {
   };
 }
 
+/**
+ * The basemap chip is not a vector layer. It governs the OSM raster underlay
+ * through setTilesEnabled(), and it is kept out of the {cell, sector, stops}
+ * object that map.setLayers() consumes so a stray "basemap" key can never be
+ * handed to the vector plane.
+ */
+const BASEMAP_LAYER = "basemap";
+const TILES_STORE_KEY = "behere.tiles";
+
+const vectorChips = () =>
+  $$("#layer-chips .chip").filter((c) => c.dataset.layer !== BASEMAP_LAYER);
+
 /** The chips' current pressed state, read as map.js's {cell, sector, stops}. */
 function readChips() {
   const out = {};
-  for (const chip of $$("#layer-chips .chip")) {
+  for (const chip of vectorChips()) {
     out[chip.dataset.layer] = chip.getAttribute("aria-pressed") !== "false";
   }
   return out;
 }
 
 function paintChips(layers) {
-  for (const chip of $$("#layer-chips .chip")) {
+  for (const chip of vectorChips()) {
     const on = !!layers[chip.dataset.layer];
     chip.setAttribute("aria-pressed", String(on));
   }
+}
+
+/**
+ * The basemap chip repaints from the map's own tile state, not from the click,
+ * so the three states stay honest: "live" is pressed, and both "off" (the user
+ * refused it, or Save-Data did) and "failed" (three errors in a row) read as
+ * unpressed. A chip that claimed "on" while nothing was drawn would be a lie
+ * about what is on screen.
+ */
+function paintBasemapChip(state) {
+  const chip = $(`#layer-chips .chip[data-layer="${BASEMAP_LAYER}"]`);
+  if (!chip) return;
+  chip.setAttribute("aria-pressed", String(state === "live"));
+}
+
+/** Written only when the user actually chooses; absent means "on", the default. */
+function tilesPreference() {
+  return readStore(TILES_STORE_KEY) !== "off";
 }
 
 /** The scale readout: metres of ground per 100 screen pixels. */
@@ -1299,7 +1333,8 @@ function wireMapChrome() {
     if (out) out.disabled = e.zoom <= e.min;
     if (zin) zin.disabled = e.zoom >= e.max;
   });
-  map.on("tiles", (e) => paintTileNote(e.state));
+  // One subscription drives both, so the chip can never disagree with the note.
+  map.on("tiles", (e) => { paintTileNote(e.state); paintBasemapChip(e.state); });
   map.on("layers", (e) => paintChips(e));
   map.on("select", (e) => {
     if (e.source === "api") return;      // we asked for it; do not echo it back
@@ -1314,6 +1349,13 @@ function wireMapChrome() {
   for (const chip of $$("#layer-chips .chip")) {
     chip.addEventListener("click", () => {
       const on = chip.getAttribute("aria-pressed") !== "false";
+      if (chip.dataset.layer === BASEMAP_LAYER) {
+        map.setTilesEnabled(!on);
+        writeStore(TILES_STORE_KEY, on ? "off" : "on");
+        paintBasemapChip(map.getTileState());
+        paintTileNote(map.getTileState());
+        return;
+      }
       map.setLayer(chip.dataset.layer, !on);
       // map.js only emits "layers" when the value really changed, so the chip
       // is repainted from the map's own state rather than from the click.
@@ -1321,7 +1363,12 @@ function wireMapChrome() {
     });
   }
 
+  // Restore a previous refusal before the first paint, so a user who turned the
+  // basemap off never sees it flash back on at startup.
+  if (!tilesPreference()) map.setTilesEnabled(false);
+
   paintChips(map.getLayers());
+  paintBasemapChip(map.getTileState());
   paintTileNote(map.getTileState());
   paintScale();
   paintLocateButton();
