@@ -45,6 +45,31 @@ shard records it. Nothing is mixed.
 The `20260101` address-to-sector file **does not exist**. That URL is a 404.
 Do not "update" the pin to it.
 
+### Source mirror
+
+`statbel.fgov.be` has been observed blackholing a GitHub runner's IPv4 SYN: no
+RST, no ICMP, and because a job's egress IP is fixed, retrying can only outlast
+the block, never route around it. The pinned sector geometry is therefore
+mirrored as a release asset on this repo:
+
+    https://github.com/jdelsoir/behere/releases/download/data-2025/
+
+`bake.py` tries the mirror **first** and enforces its sha256 strictly against
+the `MIRRORED` pin; a mismatch means a tampered or badly uploaded asset, so the
+bake discards it and falls through to upstream rather than baking unknown bytes.
+Upstream remains authoritative for provenance: `meta.json` always credits
+Statbel, never the mirror, because a mirror is a transport detail and not a
+source. If upstream ever republishes the file, the bake logs a loud warning and
+proceeds on the upstream bytes; refresh the release asset and the pin when that
+happens.
+
+To re-verify the mirror by hand:
+
+```bash
+curl -sL -o /tmp/m.zip https://github.com/jdelsoir/behere/releases/download/data-2025/sh_statbel_statistical_sectors_31370_20250101.geojson.zip
+shasum -a 256 /tmp/m.zip   # 93e87cf818ed649b9b478c3613104c9945dc6a2c449da7efb0d69224b2f08606
+```
+
 Belgium went from 581 to 565 municipalities on 1 January 2025. Any join that
 crosses that boundary must pass through `web/data/nis_history.json`, which maps
 retired 2024 NIS codes to their 2025 successors. `municipalities.json` carries

@@ -112,6 +112,33 @@ LOG_EVERY = 32 << 20
 
 
 # ===========================================================================
+# Mirrors.
+#
+# `statbel.fgov.be` publishes both an A and an AAAA record. Runners have no
+# IPv6 route, so glibc sorts IPv4 first, and that IPv4 path has been observed
+# blackholed for a runner's egress IP: no RST, no ICMP, just silence. The
+# egress IP is fixed for the whole job, so retrying cannot find a different
+# source address, only outlast the block. `Fetcher._probe` makes that failure
+# fast and truthful, but it cannot make it survivable.
+#
+# So the pinned 2025 bulk sources are mirrored as release assets on this repo.
+# The mirror is tried FIRST and its sha256 is enforced STRICTLY: a mismatch
+# means the asset was tampered with or badly uploaded, and the bake falls
+# through to upstream rather than baking unknown bytes. Upstream keeps its
+# recorded provenance in meta.json either way; a mirror is a transport detail,
+# not a source. Verified byte-identical to upstream on 15 August 2026.
+# ===========================================================================
+
+MIRROR_BASE = "https://github.com/jdelsoir/behere/releases/download/data-2025/"
+
+# cache filename -> sha256 of the upstream bytes, as published.
+MIRRORED = {
+    "sh_statbel_statistical_sectors_31370_20250101.geojson.zip":
+        "93e87cf818ed649b9b478c3613104c9945dc6a2c449da7efb0d69224b2f08606",
+}
+
+
+# ===========================================================================
 # Sources. `_fetch` entries are (cache filename, url) pairs the bake downloads.
 # Everything without `_fetch` is a runtime source, described but never called
 # here. Keys prefixed with "_" are stripped before meta.json is written.
@@ -584,6 +611,12 @@ class Fetcher:
             if side is None and size > 0:
                 # Adopt a hand-seeded / CI-restored file.
                 digest = _sha256_file(final)
+                want = MIRRORED.get(name)
+                if want and digest != want:
+                    raise BakeError(
+                        "%s: seeded cache file has sha256 %s, expected %s. "
+                        "Delete it and re-fetch rather than baking unknown "
+                        "bytes." % (name, digest, want))
                 meta = {"bytes": size, "retrieved": build_date(),
                         "sha256": digest, "url": url or "", "adopted": True}
                 self._write_sidecar(name, meta)
@@ -594,12 +627,50 @@ class Fetcher:
             raise BakeError(
                 "offline and %s is not in the cache (%s). Run without --offline "
                 "or seed the cache directory." % (name, final))
-        if not url:
+
+        # Mirror first, upstream second. A mirrored asset must match its pinned
+        # digest exactly; upstream is authoritative and only warns, so that a
+        # republished-but-equivalent upstream file cannot break a rebuild.
+        candidates = []
+        if name in MIRRORED:
+            candidates.append((MIRROR_BASE + name, True))
+        if url:
+            candidates.append((url, False))
+        if not candidates:
             raise BakeError("no URL resolved for cache entry %s" % name)
 
-        self._download(name, url, final)
-        meta = self._read_sidecar(name)
-        return final, meta["retrieved"]
+        last_err = None
+        part = final + ".part"
+        for candidate, is_mirror in candidates:
+            # A partial left by a previous candidate belongs to a different
+            # URL. Resuming it with a Range against this one would splice two
+            # unrelated bodies together.
+            if os.path.exists(part):
+                os.remove(part)
+            try:
+                digest = self._download(name, candidate, final)
+            except BakeError as exc:
+                last_err = str(exc)
+                log("fetch failed %s from %s: %s", name, candidate, last_err)
+                continue
+            want = MIRRORED.get(name)
+            if want and digest != want:
+                if is_mirror:
+                    os.remove(final)
+                    last_err = ("mirror sha256 %s != pinned %s"
+                                % (digest, want))
+                    log("fetch reject %s: %s", name, last_err)
+                    continue
+                log("WARNING     %s: upstream sha256 %s != pinned %s. "
+                    "Upstream is authoritative; the pin in MIRRORED is stale "
+                    "and the mirror should be refreshed.", name, digest, want)
+            if is_mirror:
+                log("mirrored    %s (pinned sha256 verified)", name)
+            meta = self._read_sidecar(name)
+            return final, meta["retrieved"]
+
+        raise BakeError("%s: every source failed. Last error: %s"
+                        % (name, last_err))
 
     def _download(self, name, url, final):
         import urllib.error
@@ -687,7 +758,7 @@ class Fetcher:
             })
             log("fetched     %s (%s B, sha256 %s)", name, f"{written:,}",
                 digest[:16])
-            return
+            return digest
 
         raise BakeError("%s: giving up after %d attempts (%s)"
                         % (name, self.retries + 1, last_err))
