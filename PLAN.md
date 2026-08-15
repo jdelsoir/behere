@@ -4,6 +4,8 @@
 
 Build brief for Claude Code. Self-contained: everything needed is in this file. All figures were measured against live endpoints on **14 August 2026**. Counts drift, so re-verify before relying on any number (see Appendix A).
 
+> **Revised 15 August 2026, after the build.** Six claims in the original brief did not survive contact with the data and have been corrected in place: the sector join in section 4, the sector counts in section 7, the Statbel HVD granularity and Opendatasoft rate limits in section 3.1, the GTFS stop-name language claim in section 5, and the byte budget in section 8. Each correction is marked **Corrected** and states what was measured. `docs/CONTRACT.md` carries the underlying evidence.
+
 ---
 
 ## 1. What BeHERE is
@@ -54,13 +56,15 @@ The decisive property of each source is whether a browser on a `github.io` origi
 | **Transit GTFS static, all 4 operators** | `https://api-management-discovery-production.azure-api.net/api/gtfs/feed/{delijn\|tec\|stibmivb\|nmbssncb}/static` | `*` | **No key, no registration.** De Lijn 175,963,748 B, TEC 85,001,105 B, STIB 17,532,729 B, NMBS 8,776,192 B |
 | **Transit GTFS realtime** | `.../api/gtfs/feed/{op}/rt/{trip-update\|alert\|vehicle-position}` | `*` | protobuf. De Lijn trip-update 2.8 MB, NMBS trip-update 116,628 B, TEC vehicle-position 68,052 B. TEC is the only operator publishing vehicle positions |
 | **Train stations and live departures** | `https://api.irail.be/v1/stations?format=json&lang=en` | echoes origin | 714 stations. `lang` accepts `nl`, `fr`, `en`, `de`. Rate limit 3 requests per second, send a descriptive User-Agent |
-| **Statistics per municipality** | `https://opendata-api.statbel.fgov.be/tf_hvd_*` | echoes origin | PostgREST 11.2.2, OpenAPI at root. 11 tables, 202,650 rows. Exact counts via `Prefer: count=exact` + `Range: 0-0`, read `content-range` |
+| **Statistics per arrondissement** | `https://opendata-api.statbel.fgov.be/tf_hvd_*` | echoes origin | PostgREST 11.2.2, OpenAPI at root. 11 tables, 202,650 rows. Exact counts via `Prefer: count=exact` + `Range: 0-0`, read `content-range`. **Corrected:** this API never reaches municipality level. `CD_NUTS_LEVEL` maxes at 3, so the finest granularity is the arrondissement (NUTS 3). Column names are **UPPERCASE**; a lowercase filter returns HTTP 400. The schema differs per table. Zoom-out keys on `nuts3`, verified: `CD_NUTS_LVL3=eq.BE234` returns 495 rows |
 | **Walloon tourism POI** | `https://geoservices.wallonie.be/arcgis/rest/services/TOURISME/OFFRES_TOURISTIQUES/MapServer` | echoes origin | CC BY 4.0. 13 layers, `maxRecordCount` 2000 |
 | **Flemish heritage, point in polygon** | `https://geo.onroerenderfgoed.be/zoekdiensten/afbakeningen?geometrie={GeoJSON point}&crs=EPSG:4326` | `*` | Returns protected monuments, landscapes, archaeological zones, UNESCO core and buffer, with geometry |
-| **City place datasets** | `https://{www.odwb.be\|data.stad.gent\|opendata.brussels.be}/api/explore/v2.1/catalog/datasets` | `*` | Opendatasoft Explore v2.1, no key, 20,000 calls per day per client (`x-ratelimit-limit` header) |
+| **City place datasets** | `https://{www.odwb.be\|data.stad.gent\|opendata.brussels.be}/api/explore/v2.1/catalog/datasets` | `*` | Opendatasoft Explore v2.1, no key. **Corrected:** the daily quota is **per portal, not a flat 20,000**. Measured: `data.stad.gent` 250,000, `opendata.brussels.be` 100,000, `www.odwb.be` 20,000. Always read the `x-ratelimit-limit` header rather than assuming |
 | **Brussels regional catalogue** | `https://catalog.datastore.brussels/geonetwork/srv/eng/q?_content_type=json` | `*` | 544 records. The `/api/search` path returns 403, use this one |
 
 > **Trap:** a `HEAD` request to any NAP `/static` feed returns HTTP 404 with a JSON body, while `GET` on the same URL returns HTTP 200 and a real ZIP. Never health-check those endpoints with HEAD.
+>
+> **Trap, added 15 August 2026:** those endpoints also **ignore `Range:`**. A 100 KB range request to the De Lijn feed returned all 175,832,410 bytes with HTTP 200, not 206. Any fetcher that assumes a partial response, or that resumes a download by byte offset, will silently splice a second full body onto the first. The Walloon SPW download service behaves the same way. Treat a 200 in reply to a `Range` request as "start over from zero".
 
 ### 3.2 Bake-time sources (fetch in CI, ship as shards)
 
@@ -92,13 +96,30 @@ The Statbel address-to-sector file is the backbone. Its useful columns:
 | Column | Role in BeHERE |
 |---|---|
 | `CD_REFNIS` | Municipality identity (NIS code). Joins to every statistic and to the province and region hierarchy |
-| `CD_SECTOR_2024` | Neighbourhood identity. The polygon behind "your area". Example `11001A20-` |
+| `CD_SECTOR_2024` | ~~Neighbourhood identity. The polygon behind "your area".~~ **Corrected: do not use as a join key.** See below |
 | `CD_STR` | Street identity. Joins to BeSt `street_id` for trilingual street names |
 | `CD_ZIP` | Postcode. **Never** use as a municipality key, see the trap below |
 | `GRD_NEWID` | **1 km spatial bucket**, example `1kmN3126E3927` |
 | `XY_LON_WGS84`, `XY_LAT_WGS84` | Direct browser use, no reprojection |
 | `XY_X_LB72`, `XY_Y_LB72` | EPSG:31370 metric maths, joins to every Belgian WFS layer |
 | `TX_REFNIS_DESCR_NL/FR/DE` | Official municipality names in three languages |
+
+### Corrected: the `CD_SECTOR_2024` join is dead, resolve sectors by geometry
+
+The original brief assumed an address could be joined to its statistical sector by matching `CD_SECTOR_2024` against the sector geometry's code. **That join does not work.** The 2024/25 sector reform re-coded the sectors, and the address file's codes no longer correspond to the 2025 geometry. Measured match rates against `sh_statbel_statistical_sectors_31370_20250101`:
+
+| City | Addresses joined by `CD_SECTOR_2024` |
+|---|---|
+| Ghent | 30.7% |
+| Andenne | 14.2% |
+| Liège | **2.58%** |
+
+A 2.58% join is not a join. **Address-to-sector must be resolved at bake time by point-in-polygon** against the pinned sector geometry, using each address's `XY_LON_WGS84` / `XY_LAT_WGS84`. That is what `scripts/bake.py` does, and it is why `scripts/geo31370.py` exists.
+
+Two consequences worth stating plainly:
+
+- The sector counts in section 7 were derived from the dead join and were therefore wrong. They are corrected there.
+- Point-in-polygon is the authority for a sector, so a sector code in the address file is evidence of nothing and must never be shown to a user.
 
 ### Use GRD_NEWID as the spatial index
 
@@ -137,8 +158,11 @@ City of Brussels (NIS 21004) spans **10 postcodes**, including 1000, 1020, 1120 
 | Flemish tourist products | yes | no | no | no |
 | Flemish heritage | yes | no | no | no |
 | GTFS `stop_name` | single string, in the operator's own language | | | |
+| GTFS `translations.txt` **(corrected)** | yes | yes | yes | no |
 
 English exists nowhere except iRail. Plan around that fact.
+
+**Corrected 15 August 2026:** the claim that GTFS carries only a single-language `stop_name` is wrong. The NAP feeds ship a `translations.txt` with **authored** stop-name translations: STIB/MIVB 1,088 rows, NMBS/SNCB 654. These are official translations published by the operator, not machine output, so using them is fully compatible with the no-machine-translation rule and they should be preferred over the raw `stop_name` wherever they exist. De Lijn and TEC publish no translations, which is consistent with Flanders and Wallonia being monolingual regions.
 
 ### The label resolver
 
@@ -242,15 +266,19 @@ Four bands stacked on one screen. No tabs, no dashboard.
 
 Seven municipalities for human testing. Address and sector counts read from the official Statbel file; tourism counts from live queries.
 
-| City | NIS | Addresses | Sectors | Postcodes | Tourism records | Local portal | Expect |
-|---|---|---|---|---|---|---|---|
-| Ghent | `44021` | 137,119 | 199 | 10 | 889 | data.stad.gent, 307 datasets | richest |
-| Liège | `62063` | 68,895 | 185 | 5 | 560 | ODWB, 94 + 6 datasets | rich |
-| City of Brussels | `21004` | 36,425 | 118 | 10 | 1 | opendata.brussels.be, 207 datasets | rich |
-| Ostend | `35013` | 23,986 | 71 | 1 | **2,962** | none | tourism-heavy, civic-thin |
-| Arlon | `81001` | 11,053 | 70 | 1 | 195 | ODWB, 3 datasets | thin |
-| Ottignies-Louvain-la-Neuve | `25121` | 10,079 | 60 | 4 | 76 | **zero datasets** | thinnest |
-| Andenne | `92003` | 9,825 | 74 | 1 | 38 | ODWB, 19 datasets | thin |
+**Corrected 15 August 2026.** Address and postcode counts held exactly. The **Sectors** column did not: it was derived from the dead `CD_SECTOR_2024` join, and every figure was wrong. The values below are the real counts from point-in-polygon against the pinned 2025 geometry, with the original brief's claim in brackets. The `Stops` and `Cells` columns are new, measured from the shipped shards.
+
+| City | NIS | Addresses | Sectors | Cells | Stops | Postcodes | Tourism records | Local portal | Expect |
+|---|---|---|---|---|---|---|---|---|---|
+| Ghent | `44021` | 137,119 | **254** (was 199) | 188 | 1,152 | 10 | 889 | data.stad.gent, 307 datasets | richest |
+| Liège | `62063` | 68,895 | **217** (was 185) | 95 | 1,219 | 5 | 560 | ODWB, 94 + 6 datasets | rich |
+| City of Brussels | `21004` | 36,425 | **112** (was 118) | 60 | 1,377 | 10 | 1 | opendata.brussels.be, 207 datasets | rich |
+| Ostend | `35013` | 23,986 | **88** (was 71) | 52 | 233 | 1 | **2,962** | none | tourism-heavy, civic-thin |
+| Arlon | `81001` | 11,053 | **71** (was 70) | 96 | 265 | 1 | 195 | ODWB, 3 datasets | thin |
+| Ottignies-Louvain-la-Neuve | `25121` | 10,079 | **68** (was 60) | 42 | 166 | 4 | 76 | **zero datasets** | thinnest |
+| Andenne | `92003` | 9,825 | **91** (was 74) | 98 | 259 | 1 | 38 | ODWB, 19 datasets | thin |
+
+Note that Andenne and Arlon span more 1 km cells than Ghent despite having a fourteenth of its addresses. They are rural municipalities with sparse addresses spread over a wide area, which is why they also carry more sector polygons than the original brief expected.
 
 Official names, from Statbel: Gent / Gand, Luik / Liège / Lüttich, Brussel / Bruxelles / Brüssel, Oostende / Ostende, Aarlen / Arlon, Ottignies-Louvain-la-Neuve, Andenne.
 
@@ -264,21 +292,24 @@ Ottignies-Louvain-la-Neuve, with 0 local datasets, still gets 10,079 addresses, 
 
 ## 8. Byte budget
 
-Measured by extracting each city from the Statbel file, serialising minified JSON, and gzipping.
+The original estimate assumed an array of verbose JSON objects. **Corrected 15 August 2026** against what the bake actually ships: parallel arrays with delta-encoded integers, no floating-point numbers in the grid shards, and empty language arrays omitted. That is 30% smaller than the estimate. The estimate is kept in brackets for comparison; the estimate itself was validated first by rebuilding the verbose layout and reproducing its numbers, so this is a fair comparison and not a change of measurement method.
 
-| Scope | Raw | Gzipped |
-|---|---|---|
-| Ghent | 6.9 MB | 893 KB |
-| Liège | 3.6 MB | 551 KB |
-| City of Brussels | 1.8 MB | 297 KB |
-| Ostend | 1.2 MB | 195 KB |
-| Arlon | 590 KB | 95 KB |
-| Ottignies-LLN | 548 KB | 88 KB |
-| Andenne | 528 KB | 86 KB |
-| **Seven cities total** | **15.3 MB** | **2.15 MB** |
-| All 565 municipalities | ~230 MB | ~33 MB |
+| Scope | Raw | Gzipped | Original estimate |
+|---|---|---|---|
+| Ghent | 2,485,848 | **545,350** | (893 KB) |
+| Liège | 1,416,035 | **336,568** | (551 KB) |
+| City of Brussels | 839,444 | **199,811** | (297 KB) |
+| Ostend | 470,205 | **118,596** | (195 KB) |
+| Arlon | 317,615 | **94,925** | (95 KB) |
+| Andenne | 303,821 | **91,598** | (86 KB) |
+| Ottignies-LLN | 252,055 | **70,529** | (88 KB) |
+| Shared root + i18n | | **37,005** | not counted |
+| **Seven cities total** | **6.23 MB** | **1,494,382 B = 1.43 MB** | (2.15 MB) |
+| All 565 municipalities | ~150 MB | ~23 MB | (~33 MB) |
 
-Density is flat at 6.7 to 9.0 gzipped bytes per address, so the budget scales linearly.
+**47.5% of the 3 MB acceptance ceiling.** CI fails the build if this figure ever exceeds 3,145,728 B.
+
+Andenne is the one city that came in above its estimate, by 6%, because the original figure counted addresses only and Andenne ships 91 rural sector polygons. Density is no longer flat per address for exactly that reason: rural municipalities carry disproportionate polygon and cell overhead.
 
 **Do not commit the national bundle in the MVP.** Ship the seven cities and lazy-load per municipality later. Keep generated data out of Git history where possible, so the repo does not accumulate a copy of every vintage. If the national bundle is wanted later, store shards pre-compressed and decode with `DecompressionStream("gzip")` in the browser.
 
@@ -383,6 +414,7 @@ Test for contrast, not uniformity.
 | Risk | Mitigation |
 |---|---|
 | The NAP is a single point of failure for all four transit feeds | Keep the direct TEC URL and the iRail GTFS mirror as bake-time fallbacks. Pin the last good stop index in the repo |
+| **A bulk source host is unreachable from a CI runner's egress IP.** Observed 15 August 2026: `statbel.fgov.be` blackholed a runner's IPv4 SYN, no RST and no ICMP. The egress IP is fixed for the whole job, so retrying cannot find another route, only outlast the block | The pinned 2025 sector geometry is mirrored as a release asset on this repo (`data-2025` tag) and tried **first**, with its sha256 enforced strictly and upstream as fallback. `Fetcher._probe` also caps a dead path at 15 s instead of the kernel's 127 s SYN-retry, and names the real errno instead of a misleading IPv6 `ENETUNREACH` |
 | NAP keyless access is undocumented, verified by request rather than by published policy | Show a source and date line per layer from day one. Cache politely, respect observed rate ceilings |
 | Flemish tourism content is coast-skewed and is an accommodation register, not an attraction index | Do not lean on it for Ghent. Use heritage point queries and city datasets there |
 | No English at source | The curated ~700-string override, plus visible honesty when a label is untranslated |
