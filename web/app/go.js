@@ -109,13 +109,14 @@ const IRAIL = "https://api.irail.be/v1";
  *      a single global queue, boards are cached 30 s, position is debounced,
  *      and nothing polls.
  *
- * NOTE FOR DEPLOY: the string below is a placeholder. Set `ctx.irailClient` to
- * the real published URL and a contact address once the Pages site exists, so
- * the value is genuinely contactable rather than decorative. Setting it to ""
- * removes the parameter entirely, which is the right choice if iRail ever
- * objects to unknown parameters.
+ * The string below now names the live deployment and its public source repo,
+ * which is what makes it contactable: the repo's issue tracker is the contact
+ * channel, and it needs no email address in a public client. Set
+ * `ctx.irailClient` to override, or to "" to remove the parameter entirely,
+ * which is the right choice if iRail ever objects to unknown parameters.
  */
-const IRAIL_CLIENT = "BeHERE/1.0 (+https://example.github.io/behere/)";
+const IRAIL_CLIENT =
+  "BeHERE/1.0 (+https://jdelsoir.github.io/behere/; https://github.com/jdelsoir/behere)";
 
 /**
  * Which realtime feeds actually exist. Probed on 15 August 2026; see the

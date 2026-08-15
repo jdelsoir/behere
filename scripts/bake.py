@@ -53,6 +53,7 @@ import shutil
 import socket
 import sys
 import time
+import urllib.parse
 import zipfile
 from datetime import datetime, timezone
 
@@ -472,14 +473,81 @@ class Fetcher:
 
     A cached file with no sidecar is adopted (hashed, sidecar written) so a
     CI cache restore or a hand-seeded directory works without a re-download.
+
+    ON CONNECT TIMEOUTS, AND WHY THERE IS A PROBE BEFORE EVERY DOWNLOAD
+    ------------------------------------------------------------------
+    `statbel.fgov.be` publishes both an A record (193.191.245.121) and an AAAA
+    record. GitHub Actions runners have no IPv6 route, and the A record is
+    reachable from most runner IPs but silently blackholes the SYN from some:
+    no RST, no ICMP, just nothing. That combination produces a spectacularly
+    misleading failure through plain `urlopen`:
+
+      * `socket.create_connection` walks the getaddrinfo list. IPv4 sorts
+        first (glibc, RFC 6724, no usable IPv6 source address).
+      * The IPv4 connect hangs. `urlopen`'s `timeout` is 300 s here because
+        the same number is the per-read timeout for a 212 MB stream, so the
+        socket timeout never fires. The kernel's own SYN retry limit does,
+        after tcp_syn_retries=6, which is 1+2+4+8+16+32+64 = 127 seconds.
+      * The IPv6 address is then tried and fails instantly, ENETUNREACH.
+      * `create_connection` re-raises the LAST error, so the caller is told
+        "Network is unreachable" about an IPv6 address it never wanted, and
+        the actual fault, a dead IPv4 path, is nowhere in the message.
+
+    Each attempt therefore burned 127 s and lied about why. `_probe` connects
+    to each address itself, IPv4 first, with a short deadline of its own, so a
+    dead path costs CONNECT_TIMEOUT seconds instead of 127 and the log names
+    every address and its real errno. The socket is closed immediately; the
+    real transfer is still done by `urlopen`, which keeps redirect handling,
+    TLS verification and resume exactly as they were.
+
+    A runner's egress IP is fixed for the whole job, so retrying cannot find a
+    different source address. The retry budget is wide (see `retries`) because
+    waiting the block out inside the job is the only lever available.
     """
 
-    def __init__(self, cache_dir, offline=False, timeout=300, retries=4):
+    # Per-address connect deadline. Short: an answering host completes in well
+    # under a second from a runner, so anything slower is a dead path, not a
+    # busy one.
+    CONNECT_TIMEOUT = 15
+
+    def __init__(self, cache_dir, offline=False, timeout=300, retries=11):
         self.cache_dir = cache_dir
         self.offline = offline
         self.timeout = timeout
         self.retries = retries
         os.makedirs(cache_dir, exist_ok=True)
+
+    def _probe(self, url):
+        """Open and close one TCP connection to `url`'s host, IPv4 first.
+
+        Returns None when some address answered. Returns a human-readable
+        string naming every address and its error when none did, which the
+        caller turns into a retry rather than a 127-second stall.
+        """
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        if not host:
+            return None
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            return "%s: DNS failed: %r" % (host, exc)
+        # IPv4 before IPv6: no runner has an IPv6 route, and an ENETUNREACH
+        # from a trailing AAAA is what masked the real error before.
+        infos.sort(key=lambda i: 0 if i[0] == socket.AF_INET else 1)
+        errs = []
+        for family, socktype, proto, _canon, addr in infos:
+            sock = socket.socket(family, socktype, proto)
+            sock.settimeout(self.CONNECT_TIMEOUT)
+            try:
+                sock.connect(addr)
+                return None
+            except OSError as exc:
+                errs.append("%s: %s" % (addr[0], exc))
+            finally:
+                sock.close()
+        return "%s unreachable (%s)" % (host, "; ".join(errs))
 
     def _sidecar(self, name):
         return os.path.join(self.cache_dir, name + ".fetchmeta.json")
@@ -541,6 +609,16 @@ class Fetcher:
         last_err = None
         for attempt in range(self.retries + 1):
             have = os.path.getsize(part) if os.path.exists(part) else 0
+
+            # Fail fast and truthfully on a dead path. See the class docstring:
+            # without this, a blackholed SYN costs 127 s and is then reported as
+            # an IPv6 ENETUNREACH that has nothing to do with the real fault.
+            dead = self._probe(url)
+            if dead is not None:
+                last_err = dead
+                self._backoff(attempt, name, last_err)
+                continue
+
             req = urllib.request.Request(url, headers={
                 "User-Agent": UA,
                 # Ask for raw bytes: urllib does not transparently decode, and a
@@ -635,7 +713,12 @@ class Fetcher:
         return written
 
     def _backoff(self, attempt, name, why):
-        wait = min(60, 2 ** attempt)
+        # Capped at 90 s. With retries=11 that is a retry window of roughly
+        # eleven minutes, which is the only lever available against a host that
+        # is blackholing this runner's egress IP: the IP is fixed for the whole
+        # job, so retrying cannot find a different source address, it can only
+        # outlast the block. Well inside the 90-minute job timeout.
+        wait = min(90, 2 ** attempt)
         log("fetch retry %s in %ds: %s", name, wait, why)
         time.sleep(wait)
 
