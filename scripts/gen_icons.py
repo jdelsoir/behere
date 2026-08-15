@@ -14,8 +14,8 @@ Emitted (all opaque RGB, colour type 2, 8 bits per channel):
     web/icons/apple-touch-icon.png    180x180   iOS home screen, no alpha
     web/favicon-32.png                 32x32    browser tab
 
-The mark is deliberately geometric and restrained: a solid deep-slate field with
-a white ring and a white centre dot, the universal "you are here" glyph. No
+The mark is deliberately geometric and restrained: a solid terracotta field with
+a cream ring and a cream centre dot, the universal "you are here" glyph. No
 typography, no gradient, no icon library. It survives being 32 pixels wide.
 
 Determinism: the output depends only on the constants in this file. Running it
@@ -32,9 +32,21 @@ import sys
 import zlib
 
 # --- palette -------------------------------------------------------------
-# Matches --accent in web/app/app.css and theme_color in manifest.webmanifest.
-FIELD = (0x1D, 0x3A, 0x5A)   # deep slate blue  #1D3A5A
-MARK = (0xFF, 0xFF, 0xFF)    # white
+# Organic, from web/app/tokens.css. Both values are token colours, not new ones.
+#
+# The field is --color-accent-700, NOT the brand --color-accent #c67139. The
+# brand hue carries cream at 3.03:1, which is enough for a large decorative
+# shape and not enough for a 3-pixel ring on a 32-pixel favicon. The 700 step
+# carries the same cream at 5.72:1, so the ring survives the tab strip. This is
+# the same rule the UI applies everywhere: any solid accent fill that carries a
+# cream mark uses the 700 step (docs/UI_SPEC.md section 7.4, row F1).
+#
+# Field over mark rather than mark over field, because the launcher composites
+# the icon against wallpaper of any colour: a cream-grounded icon would vanish
+# on a light home screen, and the manifest background_color already supplies the
+# cream for the splash.
+FIELD = (0x8C, 0x49, 0x1A)   # --color-accent-700  #8C491A  terracotta
+MARK = (0xF5, 0xEA, 0xD8)    # --color-bg          #F5EAD8  cream
 
 # --- mark geometry, as fractions of the canvas edge -----------------------
 RING_OUTER = 0.360

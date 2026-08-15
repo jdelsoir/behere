@@ -6,16 +6,23 @@
 <title>Offline — BeHERE</title>
 
 <!-- This page is only ever served by the service worker, from cache, with no
-     network. It therefore needs no connect-src at all. -->
+     network. It therefore needs no connect-src at all, and no tile host: the
+     basemap lives on index.html and there is nothing raster here to draw.
+     img-src is 'self' for the favicon and the touch icon; no data URI is used
+     on this page either. -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src 'none'; img-src 'self' data:;
+      content="default-src 'self'; connect-src 'none'; img-src 'self';
                style-src 'self' 'unsafe-inline'; script-src 'self';
                base-uri 'none'; object-src 'none'; form-action 'none'">
 
-<meta name="theme-color" content="#0f1216" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#1d3a5a">
+<meta name="theme-color" content="#241a0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5ead8">
 <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+
+<!-- Same two sheets, same order, as index.html: tokens first, so this page is
+     the app in the same skin rather than an orphan in an older one. -->
+<link rel="stylesheet" href="app/tokens.css">
 <link rel="stylesheet" href="app/app.css">
 <script src="app/offline.js" defer></script>
 </head>
@@ -23,12 +30,15 @@
 <body class="standalone">
 <div class="card">
 
+  <p class="card-kicker">BeHERE</p>
   <h1>No network</h1>
 
-  <p class="sub">
+  <p class="quiet">
     BeHERE could not reach the network. The parts of the app that live on this
     device still work: your address, your neighbourhood, the municipality, and
-    the stops around you.
+    the stops around you. The map falls back to the baked shards, so the 1 km
+    cell, the sector outlines and the stops are still drawn; only the
+    OpenStreetMap raster tiles underneath them are missing.
   </p>
 
   <!-- Last-known departures, with an explicit "as of". Written by app/offline.js
@@ -46,7 +56,7 @@
   </section>
 
   <p>
-    <button type="button" class="btn" id="retry">Try again</button>
+    <button type="button" class="btn btn-primary" id="retry">Try again</button>
   </p>
 
 </div>

@@ -33,6 +33,24 @@
  * ever set. The class vocabulary is app.css's own (.answer, .sub, .facts,
  * .rows, .quiet, .src, .endonym, .untranslated, details/.disclosure-body); the
  * only additions are `data-*` hooks, listed at the bottom of this file.
+ *
+ * THE MAP-FIRST REVAMP CHANGED TWO THINGS HERE, AND NEITHER IS LOGIC.
+ *
+ *   1. Presentation. The body now renders into the pill-overlay panel of
+ *      docs/UI_SPEC.md: notes carry a kind label and a tone, and the tone rule
+ *      is absolute (UI_SPEC 2.5). "Published nothing here" and "out of scope
+ *      by design" are quiet and are NOT faults. "Could not be reached" is the
+ *      only warn tone, and in this band it can only ever mean the device's own
+ *      geolocation, because nothing this band shows is fetched at runtime.
+ *
+ *   2. It feeds the map. The 1 km cell, the sector polygons, the sector you
+ *      are standing in and the position dot are all resolved here already, so
+ *      they are published rather than re-derived: UI_SPEC 1.4 says "the map
+ *      asks here.js, it does not re-derive it. There is one sector authority
+ *      in this app." Section 7 is that interface.
+ *
+ * The view model, the resolve rules, the point-in-polygon and the three-phase
+ * read are untouched.
  */
 
 import {
@@ -106,6 +124,21 @@ function shimResolveLabel(entity, kind, uiLang, ctx) {
 export const HERE_UI_DEFAULTS = Object.freeze({
   "band.here": "Here",
 
+  /* The note kind labels, UI_SPEC 2.3. Every note in the panel is a kind label
+   * over a body, and the kind is what makes UI_SPEC 2.5's three situations
+   * distinguishable at a glance rather than only by reading the sentence:
+   * PUBLISHED NOTHING and OUT OF SCOPE BY DESIGN are quiet and are not faults;
+   * COULD NOT BE REACHED is the one that is. They are declared here because
+   * this band renders them; scripts/check_i18n.py gates them in all three
+   * languages either way, and around.js, go.js and now.js may declare the same
+   * keys for the same purpose without conflict. */
+  "note.waiting": "Waiting for a position",
+  "note.nothing": "Published nothing",
+  "note.scope": "Out of scope by design",
+  "note.unreachable": "Could not be reached",
+  "note.approx": "Approximate",
+  "note.pending": "Not loaded yet",
+
   "here.address": "Address",
   "here.away": "{d} from you",
   "here.far": "The nearest baked address is {d} away, so this is approximate.",
@@ -144,7 +177,15 @@ export const HERE_UI_DEFAULTS = Object.freeze({
   "empty.here.province": "The Brussels-Capital Region has no province.",
   "empty.here.streets": "The street name table for this municipality has not loaded, so the street is shown by its id.",
 
+  /* UI_SPEC 2.5 and 10.2. The prototype writes "Seven municipalities were
+   * baked" as a literal; this release ships nine, so {n} is filled from
+   * meta.json.municipalities.length. That substitution is the only change the
+   * spec permits to this sentence, and the reason it is permitted is that the
+   * alternative is shipping a false number. */
+  "here.offrelease": "This 1 km square is not in the {n} municipalities of this release, so there is no address, sector or municipality to resolve against on this device.",
+
   "here.source": "Source",
+  "here.src.why": "Baked only. No runtime source is called, so this band answers in airplane mode.",
   "flag.untranslated": "Not available in English",
   "flag.endonym": "Street and place names are shown in their official local language.",
 });
@@ -487,6 +528,62 @@ function el(tag, attrs, ...children) {
 /** Per-kind marker policy, CONTRACT 9.3. */
 const INLINE_MARKER = { munty: true, cat: true, ui: true };
 
+/**
+ * The five honest ways this band can have nothing to say, as a `data-empty`
+ * value. UI_SPEC 2.5 names the first three and insists they are not one thing:
+ *
+ *   published-nothing  the source answered and there is no data at this place
+ *   out-of-scope       this release does not cover here, by design
+ *   unreachable        THE ONLY FAULT. Warn tone, never used for the other two
+ *
+ * and two more that this band needs because it paints three times per fix:
+ *
+ *   pending            a baked file that will arrive, has not arrived yet
+ *   idle               no position yet, so nothing has been asked of anything
+ *
+ * Everything the Here band shows is baked (CONTRACT 7.5, acceptance test 1), so
+ * `unreachable` appears here for exactly one thing: the device's own
+ * geolocation refusing or failing, in the standalone path's fail(). No layer in
+ * this band can be "unreachable", because no layer in it is fetched at runtime.
+ */
+export const NOTHING = Object.freeze({
+  PUBLISHED_NOTHING: "published-nothing",
+  OUT_OF_SCOPE: "out-of-scope",
+  UNREACHABLE: "unreachable",
+  PENDING: "pending",
+  IDLE: "idle",
+});
+
+/**
+ * One note: a kind label over a body, in a quiet or a warn box (UI_SPEC 2.3).
+ *
+ * THE TONE RULE IS THE LOAD-BEARING ONE. Warn is only ever for data that is
+ * real but old, or for a source that could not be reached. It is never used for
+ * "published nothing here" and never for "out of scope by design", because
+ * absent and broken are different claims and blurring them is how an app that
+ * is behaving correctly starts to look broken in the two pilot cities that
+ * publish almost nothing.
+ *
+ * The class stays `.quiet`, which is app.css's existing vocabulary; the tone
+ * rides on `data-tone`, so no band module has to know a second class name and
+ * a stylesheet that has not been told about warn notes still renders a calm,
+ * correct box rather than an unstyled one.
+ *
+ * @param {{layer:string, body:string, kind?:string, tone?:"quiet"|"warn",
+ *          empty?:string}} spec
+ */
+function note(spec) {
+  const p = el("p", {
+    class: "quiet",
+    "data-layer": spec.layer,
+    "data-tone": spec.tone || "quiet",
+    "data-empty": spec.empty || null,
+  });
+  if (spec.kind) p.appendChild(el("strong", { class: "note__kind", text: spec.kind }));
+  p.appendChild(el("span", { class: "note__body", text: spec.body }));
+  return p;
+}
+
 /* =====================================================================
  * 6. Rendering
  * ===================================================================== */
@@ -585,11 +682,31 @@ function fact(dl, key, term, ...nodes) {
   return dl;
 }
 
-function emptyFact(dl, key, term, copy) {
+/**
+ * A fact whose value is honestly absent. It keeps its term, so the row still
+ * says what is missing rather than vanishing, and it carries the same
+ * `data-empty` taxonomy as a note so the two can never disagree.
+ */
+function emptyFact(dl, key, term, copy, empty) {
   dl.appendChild(el("dt", { "data-fact": key, text: term }));
-  dl.appendChild(el("dd", { "data-fact": key, "data-state": "empty" },
-    el("span", { class: "sub", text: copy })));
+  dl.appendChild(el("dd", {
+    "data-fact": key,
+    "data-state": "empty",
+    "data-empty": empty || NOTHING.PUBLISHED_NOTHING,
+  }, el("span", { class: "sub", text: copy })));
   return dl;
+}
+
+/** Six decimals is about 11 cm: the precision the baked coordinates carry. */
+function coordText(fix, lang) {
+  const dp = (v) => {
+    try {
+      return new Intl.NumberFormat(lang, {
+        minimumFractionDigits: 6, maximumFractionDigits: 6, useGrouping: false,
+      }).format(v);
+    } catch (_) { return v.toFixed(6); }
+  };
+  return dp(fix.lat) + ", " + dp(fix.lon);
 }
 
 /** "Source: title (publisher), vintage" for the standalone path. */
@@ -607,6 +724,13 @@ const HERE_SOURCE_IDS = ["statbel_addr_sector_2025", "statbel_sectors_2025", "st
 
 /**
  * Render the body of the Here band into `el`.
+ *
+ * The shape is UI_SPEC 2.3's three: notes, field rows and (in this band) no
+ * item cards. Reading order is the order the questions are asked in: the
+ * address is the answer and goes first at display size, the administrative
+ * facts follow as a `dl.facts` grid, the caveats follow those, and the raw
+ * position and provenance close the panel.
+ *
  * @param {Element} host  the band's div[data-role="body"]
  * @param {HereView} view @param {RenderApi} api
  * @param {{coverageOpen?: boolean, ownSourceLine?: boolean}} [state]
@@ -617,13 +741,18 @@ export function renderHereBody(host, view, api, state = {}) {
 
   if (!view || !view.fix) {
     host.textContent = "";
-    host.appendChild(el("p", { class: "quiet", "data-layer": "position",
-      text: api.t("empty.here.position") }));
+    host.appendChild(note({
+      layer: "position",
+      empty: NOTHING.IDLE,
+      kind: api.t("note.waiting"),
+      body: api.t("empty.here.position"),
+    }));
     return { endonym: false };
   }
 
   /* ---- the address, the biggest string in the band ---------------------- */
   const a = view.address;
+  const m = view.municipality;
   if (a) {
     let streetNode;
     if (a.streetNames) {
@@ -651,17 +780,54 @@ export function renderHereBody(host, view, api, state = {}) {
     out.push(el("p", { class: "sub", "data-layer": "address-meta",
       "data-confidence": a.far ? "low" : null }, sub));
 
+    // A confidence claim, not a failure: the answer above is still the best
+    // one on this device, and this says how much to trust it.
     if (a.far) {
-      out.push(el("p", { class: "quiet", "data-layer": "address-far",
-        text: api.t("here.far", { d: api.metres(a.distanceM) }) }));
+      out.push(note({
+        layer: "address-far",
+        kind: api.t("note.approx"),
+        body: api.t("here.far", { d: api.metres(a.distanceM) }),
+      }));
     }
+    // <nis>/streets.json is baked and will land; the id above is a placeholder,
+    // not a gap in the release.
     if (!a.streetNames) {
-      out.push(el("p", { class: "quiet", "data-layer": "streets",
-        text: api.t("empty.here.streets") }));
+      out.push(note({
+        layer: "streets",
+        empty: NOTHING.PENDING,
+        kind: api.t("note.pending"),
+        body: api.t("empty.here.streets"),
+      }));
     }
-  } else {
-    out.push(el("p", { class: "quiet", "data-layer": "address",
-      text: api.t("empty.here.address") }));
+  } else if (m) {
+    // In a municipality this release ships, and still no address within reach.
+    // The pilot cities carry addresses and the ground between them does not.
+    // Nothing failed; nothing was published here to begin with.
+    out.push(note({
+      layer: "address",
+      empty: NOTHING.PUBLISHED_NOTHING,
+      kind: api.t("note.nothing"),
+      body: api.t("empty.here.address"),
+    }));
+  }
+  // No `else`. Off the release there is no address BECAUSE the square is out
+  // of scope, and the note below says exactly that. Two notes with two
+  // different taxonomies for one cause would be two answers to one question.
+
+  /* ---- off the release, UI_SPEC 2.5 ------------------------------------ */
+  // No municipality resolves, so there is nothing to be missing: this square
+  // was never in scope. Quiet tone, out-of-scope taxonomy, and the count of
+  // baked municipalities comes from meta.json rather than from the sentence.
+  if (!m) {
+    const n = Array.isArray(view.shipped) ? view.shipped.length : null;
+    out.push(note({
+      layer: "municipality",
+      empty: NOTHING.OUT_OF_SCOPE,
+      kind: api.t("note.scope"),
+      body: n !== null
+        ? api.t("here.offrelease", { n: new Intl.NumberFormat(api.lang).format(n) })
+        : api.t("empty.here.municipality"),
+    }));
   }
 
   /* ---- the facts -------------------------------------------------------- */
@@ -685,12 +851,15 @@ export function renderHereBody(host, view, api, state = {}) {
         : api.t("here.sector.address")),
     }));
     fact(dl, "sector", api.t("here.sector"), bits);
-  } else {
-    emptyFact(dl, "sector", api.t("here.sector"), api.t("empty.here.sector"));
+  } else if (m) {
+    // In scope, and still no polygon hit: worth a row that says so. Off the
+    // release the out-of-scope note above has already said it once, and saying
+    // it twice would read as two separate faults.
+    emptyFact(dl, "sector", api.t("here.sector"), api.t("empty.here.sector"),
+      NOTHING.PUBLISHED_NOTHING);
   }
 
   // Municipality, plus its official names.
-  const m = view.municipality;
   if (m) {
     const r = api.label({ name: m.names || {}, id: m.nis }, "munty");
     fact(dl, "municipality", api.t("here.municipality"), labelNodes(r, "munty", api, flags));
@@ -730,9 +899,10 @@ export function renderHereBody(host, view, api, state = {}) {
     if (alt.length) fact(dl, "alt", api.t("here.alt"), alt);
 
     fact(dl, "nis", api.t("here.nis"), el("span", { class: "code", text: m.nis }));
-  } else {
-    emptyFact(dl, "municipality", api.t("here.municipality"), api.t("empty.here.municipality"));
   }
+  // No `else`. Off the release the out-of-scope note above is the answer, and
+  // an empty "Municipality: —" row underneath it would read as a second,
+  // separate failure of the same one thing.
 
   // District, province, region. `prov` is null for the 19 Brussels
   // municipalities, and that is a fact about Belgium, not a missing value.
@@ -751,7 +921,10 @@ export function renderHereBody(host, view, api, state = {}) {
       const r = api.label({ name: rec.names, id: rec.code }, kind);
       fact(dl, key, api.t("here." + key), labelNodes(r, kind, api, flags));
     } else if (key === "province" && m && m.rgn === "04000") {
-      emptyFact(dl, key, api.t("here.province"), api.t("empty.here.province"));
+      // Belgium's own answer, not a gap in ours: the Brussels-Capital Region
+      // has no province. Out of scope by design, at the level of the country.
+      emptyFact(dl, key, api.t("here.province"), api.t("empty.here.province"),
+        NOTHING.OUT_OF_SCOPE);
     }
   };
   admin("district", "dstr", view.district);
@@ -767,6 +940,12 @@ export function renderHereBody(host, view, api, state = {}) {
     });
     fact(dl, "postcodes", api.t("here.postcodes"), zips);
   }
+
+  // The raw position, last, because it is evidence for every row above it and
+  // because a coordinate is one of the two things in this panel people copy
+  // (the other is the cell id, on the line below the facts).
+  fact(dl, "coords", api.t("here.position"),
+    el("span", { class: "code", text: coordText(view.fix, api.lang) }));
 
   if (dl.childNodes.length) out.push(dl);
 
@@ -817,7 +996,7 @@ export function renderHereBody(host, view, api, state = {}) {
   out.push(el("p", { class: "sub", "data-layer": "position" }, posBits));
 
   if (view.fix.source === "manual") {
-    out.push(el("p", { class: "quiet", "data-layer": "position-manual", text: api.t("here.manual") }));
+    out.push(note({ layer: "position-manual", body: api.t("here.manual") }));
   }
   if (!view.online) {
     out.push(el("p", { class: "sub", "data-layer": "offline", text: api.t("here.local") }));
@@ -828,9 +1007,17 @@ export function renderHereBody(host, view, api, state = {}) {
     out.push(el("p", { class: "endonym", text: api.t("flag.endonym") }));
   }
 
+  // UI_SPEC 2.5, "the source lines, verbatim": the band says WHY its sources
+  // are what they are, in a second line at the same size as the source line
+  // itself. It comes first because it reads as the lead-in to it, and because
+  // under the shell the source line is p.src[data-role="src"], a sibling of
+  // this body that main.js owns and that this module must not write into.
+  // No date is written into the sentence; every vintage is in the line below.
+  out.push(el("p", { class: "src src__why", "data-layer": "why", text: api.t("here.src.why") }));
+
   if (state.ownSourceLine) {
     const line = sourceText(view, api, HERE_SOURCE_IDS);
-    if (line) out.push(el("p", { class: "src", text: line }));
+    if (line) out.push(el("p", { class: "src", "data-role": "own-src", text: line }));
   }
 
   host.textContent = "";
@@ -839,7 +1026,149 @@ export function renderHereBody(host, view, api, state = {}) {
 }
 
 /* =====================================================================
- * 7. mount(el, ctx): the band module entry main.js calls
+ * 7. WHAT THE MAP READS FROM THIS BAND
+ * =====================================================================
+ *
+ * UI_SPEC 1.4: "Which sector you are in is decided by here.js's existing
+ * point-in-polygon. The map asks here.js, it does not re-derive it. There is
+ * one sector authority in this app."
+ *
+ * This band already resolves the three things map.js draws as vector layers,
+ * so it publishes them rather than making map.js resolve them a second time:
+ *
+ *   layer 3, the 1 km cell      <- `cell`, a GRD_NEWID that map.js turns into
+ *                                  four corners with grid.js cellRing()
+ *   layer 4, the sector polys   <- `sectors`, the decoded sector.geojson, plus
+ *                                  `sector`, the code of the one you stand in
+ *   layers 5 and 7, the dot     <- `position`, including `accuracy` in metres,
+ *                                  which is the radius of the accuracy circle
+ *
+ * and one thing dock.js reads: `state`, which is the pill's state dot
+ * (`answers` / `nothing` / `idle`), and `sector` / `nis`, which is the pill's
+ * count string (UI_SPEC 2.2, keys `pill.here.nis`, `pill.none`, `pill.idle`).
+ * The formatting of that string stays in dock.js, where the key lives.
+ *
+ * THREE DELIVERY PATHS, because the shell has not been written yet and this
+ * module must not care which one it picks:
+ *
+ *   1. `ctx.onHere(state)` or `ctx.onMapState(state)`, if the context carries
+ *      one. main.js can add it in BAND_ADAPTER.here.mountOptions with no other
+ *      change; `mountOptions` is already Object.assign'd onto the context.
+ *   2. A `behere:here` CustomEvent on the band body, bubbling, `detail` = the
+ *      state. Listen on the section, on #dock-panel or on the document.
+ *   3. `handle.mapState`, on the object mount() returns, which main.js already
+ *      keeps in `app.bands.get("here").controller`. Poll-free: it is the value
+ *      the last paint published.
+ *
+ * The state object is FROZEN. It is a read model, not a channel: map.js may
+ * not write to it, and `sectors` is the same FeatureCollection instance this
+ * module resolves against, so no copy is made of up to 150 KB of geometry.
+ */
+
+/** The bubbling event name, exported so a listener cannot mistype it. */
+export const HERE_EVENT = "behere:here";
+
+/**
+ * @typedef {Object} HereMapState
+ * @property {"answers"|"nothing"|"idle"} state  pill state dot, UI_SPEC 2.2
+ * @property {"centre"|"full"|"refined"} phase
+ * @property {?{lat:number, lon:number, accuracy:number, at:number, source:?string}} position
+ * @property {?string} cell        centre GRD_NEWID, the 1 km cell path
+ * @property {string[]} cells      the nine cell ids read so far
+ * @property {?string} nis
+ * @property {?Object} sectors     decoded <nis>/sector.geojson, or null
+ * @property {?string} sectorsFor  the NIS `sectors` belongs to
+ * @property {?string} sector      properties.s of the sector you are standing in
+ * @property {"polygon"|"address"|null} sectorSource  how that was decided
+ * @property {?number} sectorToleranceM   the simplification the polygons carry
+ * @property {?{lat:number, lon:number, distanceM:number, far:boolean}} address
+ * @property {?string} vintage
+ */
+
+const EMPTY_MAP_STATE = Object.freeze({
+  state: "idle", phase: "centre",
+  position: null, cell: null, cells: [], nis: null,
+  sectors: null, sectorsFor: null,
+  sector: null, sectorSource: null, sectorToleranceM: null,
+  address: null, vintage: null,
+});
+
+/**
+ * Project a HereView onto what the map and the dock need. Pure, exported, and
+ * testable without a DOM.
+ *
+ * @param {?HereView} view
+ * @param {{sectors?: ?Object, sectorsFor?: ?string}} [opts]
+ * @returns {HereMapState}
+ */
+export function hereMapState(view, opts = {}) {
+  if (!view || !view.fix) return EMPTY_MAP_STATE;
+  const s = view.sector;
+  const a = view.address;
+  const answers = !!(view.municipality || view.sector || view.address);
+  return Object.freeze({
+    // "nothing" is not an error. It is the honest reading of a square this
+    // release does not cover, and UI_SPEC 2.2 gives it a hollow dot, not a
+    // warn one.
+    state: answers ? "answers" : "nothing",
+    phase: view.phase,
+    position: Object.freeze({
+      lat: view.fix.lat,
+      lon: view.fix.lon,
+      accuracy: typeof view.fix.accuracy === "number" ? view.fix.accuracy : 0,
+      at: view.fix.at || 0,
+      source: view.fix.source || null,
+    }),
+    cell: view.cell || null,
+    cells: Object.freeze((view.cells || []).slice()),
+    nis: view.nis || null,
+    sectors: opts.sectors || null,
+    sectorsFor: opts.sectors ? (opts.sectorsFor || view.nis || null) : null,
+    sector: s ? s.code : null,
+    sectorSource: s ? s.source : null,
+    sectorToleranceM: s && s.toleranceM !== undefined ? s.toleranceM : null,
+    address: a ? Object.freeze({
+      lat: a.lat, lon: a.lon, distanceM: a.distanceM, far: !!a.far,
+    }) : null,
+    vintage: view.vintage || null,
+  });
+}
+
+/** Cheap identity for a published state, so an unchanged paint stays silent. */
+function mapSignature(s) {
+  const p = s.position;
+  return [
+    s.state, s.phase, p ? p.lat : "", p ? p.lon : "", p ? p.accuracy : "",
+    s.cell, s.nis, s.sector, s.sectorSource, s.sectorsFor,
+    s.address ? s.address.distanceM : "",
+  ].join("|");
+}
+
+/**
+ * Hand one state to every listener that asked for it, once.
+ *
+ * `dispatchEvent` and `CustomEvent` are both feature-detected: this module is
+ * mounted against a four-method fake DOM in scripts/test_i18n_marker.mjs, and
+ * a band module that only works in a real browser cannot be tested headlessly.
+ */
+function publishMapState(node, sinks, state, last) {
+  if (last && last.sig === mapSignature(state)) return last;
+  for (const sink of sinks) {
+    if (typeof sink !== "function") continue;
+    try { sink(state); } catch (err) { console.error("BeHERE: here map sink failed", err); }
+  }
+  if (node && typeof node.dispatchEvent === "function" && typeof CustomEvent === "function") {
+    try {
+      node.dispatchEvent(new CustomEvent(HERE_EVENT, {
+        detail: state, bubbles: true,
+      }));
+    } catch (_) { /* a DOM without CustomEvent still gets the callbacks */ }
+  }
+  return { sig: mapSignature(state), state };
+}
+
+/* =====================================================================
+ * 7b. mount(el, ctx): the band module entry main.js calls
  * ===================================================================== */
 
 /** Cached sector geometry per NIS, so a repaint never refetches. */
@@ -849,11 +1178,14 @@ let _override = null;
 
 /**
  * @param {Element} host  the band's div[data-role="body"]
- * @param {Object} ctx    main.js's BeHereContext
- * @returns {{update: (ctx: Object) => void}}
+ * @param {Object} ctx    main.js's BeHereContext, optionally carrying
+ *                        `onHere` / `onMapState`, a (HereMapState) => void
+ * @returns {{update: (ctx: Object) => void, mapState: HereMapState,
+ *            getMapState: () => HereMapState}}
  */
 export function mount(host, ctx) {
   let coverageOpen = false;
+  let published = null;
 
   function paint(c) {
     const view = viewFromContext(c, _sectorFC);
@@ -868,6 +1200,12 @@ export function mount(host, ctx) {
     if (typeof c.setSources === "function") {
       c.setSources("here", HERE_SOURCE_IDS[0], HERE_SOURCE_IDS[1], HERE_SOURCE_IDS[2]);
     }
+
+    // The map is fed AFTER the text, always. The band is the answer; the map
+    // is the answer drawn. If the two ever disagree the text is the one that
+    // has to be right, and it is the one a screen reader gets.
+    published = publishMapState(host, [c.onHere, c.onMapState],
+      hereMapState(view, { sectors: _sectorFC, sectorsFor: _sectorNis }), published);
   }
 
   /** The sector polygon is the one file main.js does not load. Fetch it once
@@ -897,6 +1235,10 @@ export function mount(host, ctx) {
       paint(next);
       ensureSector(next);
     },
+
+    /** The last state handed to the map. See section 7. */
+    get mapState() { return published ? published.state : EMPTY_MAP_STATE; },
+    getMapState() { return published ? published.state : EMPTY_MAP_STATE; },
   };
 }
 
@@ -916,8 +1258,13 @@ export default mount;
  * `onMunicipality` fires once per NIS change so a host can default the UI
  * language from the municipality rather than the browser (acceptance test 5).
  *
+ * `onMapState` / `onHere` get the same HereMapState the shell path publishes,
+ * and the same `behere:here` event bubbles off the section, so a host that
+ * drives this band alone can still draw the map (section 7).
+ *
  * @param {Element} root
- * @param {{lang?:string, onMunicipality?:Function, onResolve?:Function}} [options]
+ * @param {{lang?:string, onMunicipality?:Function, onResolve?:Function,
+ *          onMapState?:Function, onHere?:Function}} [options]
  */
 export function createHereBand(root, options = {}) {
   const section = el("section", {
@@ -936,11 +1283,34 @@ export function createHereBand(root, options = {}) {
   let lastNis = null;
   let coverageOpen = false;
   let lastView = null;
+  let published = null;
+  let sectorFC = null;
+  let sectorNis = null;
+
+  /** resolveHere() has already read this file; geo.js caches it per NIS, so
+   *  this second call is a cache hit and never a second request. It exists
+   *  because the view model carries the resolved sector but not the geometry,
+   *  and the geometry is what the map draws. */
+  function ensureSector(nis) {
+    if (!nis || nis === sectorNis) return;
+    sectorNis = nis;
+    sectorFC = null;
+    readSectors(nis).then((fc) => {
+      if (sectorNis !== nis) return;
+      sectorFC = fc;
+      if (lastView) paint(lastView);
+    }).catch(() => { /* the band still answers; the map draws one layer less */ });
+  }
 
   function paint(view) {
     lastView = view;
     const api = makeApi({ lang, override: _override }, view);
-    section.setAttribute("data-state", view && view.fix ? "ready" : "idle");
+    // UI_SPEC 2.5: "empty" is a state this band can legitimately be in, and it
+    // is not "error". A square off the release resolves perfectly; there is
+    // simply nothing baked under it.
+    section.setAttribute("data-state", !view || !view.fix
+      ? "idle"
+      : (view.municipality || view.address || view.sector ? "ready" : "empty"));
     section.setAttribute("data-phase", view ? view.phase : "none");
     renderHereBody(host, view, api, { coverageOpen, ownSourceLine: true });
     const d = host.querySelector("details");
@@ -953,6 +1323,10 @@ export function createHereBand(root, options = {}) {
         detail: view.municipality, bubbles: true,
       }));
     }
+
+    if (view && view.nis) ensureSector(view.nis);
+    published = publishMapState(section, [options.onHere, options.onMapState],
+      hereMapState(view, { sectors: sectorFC, sectorsFor: sectorNis }), published);
   }
 
   const api = {
@@ -982,17 +1356,36 @@ export function createHereBand(root, options = {}) {
       }
     },
 
-    /** Report a geolocation failure: the band names what is missing. */
+    /** Report a geolocation failure: the band names what is missing.
+     *
+     *  A DENIED permission is not a fault of this app and does not get the
+     *  warn tone: the user switched location off and the band says so calmly.
+     *  A device that tried and could not answer is the one case in this band
+     *  where UI_SPEC 2.5's third situation, "could not be reached", is real,
+     *  and it is the device that could not be reached, never a data source. */
     fail(geoError) {
-      section.setAttribute("data-state", geoError && geoError.kind === "denied" ? "denied" : "error");
+      const denied = !!(geoError && geoError.kind === "denied");
+      section.setAttribute("data-state", denied ? "denied" : "error");
       const a = makeApi({ lang }, { municipality: null });
       host.textContent = "";
-      host.appendChild(el("p", { class: "quiet", "data-layer": "position",
-        text: a.t("empty.here.position") }));
+      host.appendChild(note({
+        layer: "position",
+        empty: denied ? NOTHING.IDLE : NOTHING.UNREACHABLE,
+        tone: denied ? "quiet" : "warn",
+        kind: a.t(denied ? "note.waiting" : "note.unreachable"),
+        body: a.t("empty.here.position"),
+      }));
+      lastView = null;
+      published = publishMapState(section, [options.onHere, options.onMapState],
+        EMPTY_MAP_STATE, published);
     },
 
     /** Repaint in another language. No refetch: everything is already local. */
     setLang(next) { lang = next; if (lastView) paint(lastView); },
+
+    /** The last state handed to the map. See section 7. */
+    get mapState() { return published ? published.state : EMPTY_MAP_STATE; },
+    getMapState() { return published ? published.state : EMPTY_MAP_STATE; },
 
     destroy() { if (controller) controller.abort(); section.remove(); },
   };
@@ -1020,9 +1413,17 @@ export { neighbours };
  * ---------------------------------------------------------------------------
  * MARKUP CONTRACT: what this module writes into div.band-body[data-role=body]
  * ---------------------------------------------------------------------------
- * Classes are app.css's existing vocabulary. Everything added is a data-*
- * hook, so no new CSS is required for the band to look right, and any hook
- * below can be styled without touching this file.
+ * Classes are app.css's existing vocabulary, unchanged by the map-first
+ * revamp: UI_SPEC 4.2 restyles every one of them and renames none. Everything
+ * else here is a data-* hook, so no new CSS is required for the band to be
+ * legible, and any hook below can be styled without touching this file.
+ *
+ * NO ICONS ARE DRAWN HERE. app/icons.js exists for the map chrome; inside a
+ * band body every icon Organic would use sits beside text that already says
+ * the same thing, the disclosure marker stays app.css's rotating triangle
+ * (UI_SPEC 4.2), and icons.js needs document.createElementNS, which the
+ * four-method DOM in scripts/test_i18n_marker.mjs does not have. A band body
+ * that cannot be rendered headlessly cannot be tested.
  *
  *   p.answer[data-layer="address"]
  *       span.name[lang]              the street, in its authored language
@@ -1030,14 +1431,29 @@ export { neighbours };
  *   p.sub[data-layer="address-meta"][data-confidence="low"?]
  *       span.code[data-fact="zip"]   the postcode, DISPLAY ONLY
  *       span.measure                 "18 m from you"
- *   p.quiet[data-layer="address"]            when no baked address is near
- *   p.quiet[data-layer="address-far"]        when the nearest one is > 300 m
- *   p.quiet[data-layer="streets"]            when streets.json has not landed
+ *
+ *   p.quiet[data-layer=L][data-tone="quiet"|"warn"][data-empty=E?]
+ *       strong.note__kind            the kind label, e.g. "PUBLISHED NOTHING"
+ *       span.note__body              the sentence
+ *     L is one of: position, address, address-far, streets, municipality,
+ *                  position-manual
+ *     E is one of: published-nothing, out-of-scope, unreachable, pending, idle
+ *
+ *     UI_SPEC 2.5 is the whole point of E. `published-nothing` and
+ *     `out-of-scope` are NOT faults and keep the quiet tone; `unreachable` is
+ *     the only fault and the only warn tone in this band, and it can only ever
+ *     be the device's own geolocation, because nothing this band shows is
+ *     fetched at runtime.
+ *
+ *     app.css MUST give .note__kind `display: block` (UI_SPEC 2.3 gives it
+ *     11px / .08em / uppercase / opacity .72 / margin-bottom 4px). Without
+ *     that rule the kind and the body run together on one line; nothing else
+ *     breaks.
  *
  *   dl.facts
- *     dt[data-fact=KEY] / dd[data-fact=KEY][data-state="empty"?]
+ *     dt[data-fact=KEY] / dd[data-fact=KEY][data-state="empty"?][data-empty=E?]
  *     KEY is one of: sector, municipality, official, alt, nis,
- *                    district, province, postcodes
+ *                    district, province, region, postcodes, coords
  *     dd[data-fact="official"][data-bilingual="true"]   Brussels, both names
  *     inside a dd: span.name[lang], span.code, sup.untranslated,
  *                  span.sub[data-source="polygon"|"address"]
@@ -1049,10 +1465,10 @@ export { neighbours };
  *     div.disclosure-body > p.sub + ul.rows > li > span.name + span.meta
  *
  *   p.sub[data-layer="position"]     accuracy, cell id, time of the fix
- *   p.quiet[data-layer="position-manual"]
  *   p.sub[data-layer="offline"]
  *   p.endonym                        one per panel, never one per street
- *   p.src                            standalone path only; under main.js the
+ *   p.src.src__why[data-layer="why"]  why these sources and no others
+ *   p.src[data-role="own-src"]       standalone path only; under main.js the
  *                                    band's own p.src[data-role=src] is filled
  *                                    through ctx.setSources()
  *
@@ -1060,5 +1476,29 @@ export { neighbours };
  *   section.band#band-here[data-band="here"][data-state][data-phase]
  *     > header > h2#h-here
  *     > div.band-body[data-role="body"]
+ *   data-state is idle | ready | empty | denied | error. `empty` means the
+ *   square resolved and is off the release; it is not `error`.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THE SHELL PASSES TO THE MAP
+ * ---------------------------------------------------------------------------
+ * Section 7 is the full account. In one line each:
+ *
+ *   hereMapState(view, {sectors})  pure projection of the view model
+ *   ctx.onHere / ctx.onMapState    a callback on the context, if there is one
+ *   "behere:here"                  a bubbling CustomEvent, detail = the state
+ *   handle.mapState                the last published state, on mount()'s
+ *                                  return value and on createHereBand()'s
+ *
+ * and the fields, all frozen:
+ *
+ *   position {lat, lon, accuracy, at, source}   the dot and the accuracy ring
+ *   cell, cells                                 the 1 km GRD_NEWID path
+ *   sectors, sectorsFor, sector, sectorSource, sectorToleranceM
+ *                                               the sector polygons, and which
+ *                                               one you stand in. THIS MODULE
+ *                                               IS THE ONE SECTOR AUTHORITY
+ *   nis, vintage, phase, address
+ *   state  "answers" | "nothing" | "idle"       the pill's state dot
  * ---------------------------------------------------------------------------
  */

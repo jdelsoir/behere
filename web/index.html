@@ -8,17 +8,58 @@
 
 <!-- PWA head tags, from the static-pwa-ghpages template. Every path here is
      RELATIVE: the site is a project page served under /behere/, so a single
-     leading slash would 404. -->
+     leading slash would 404. That rule covers the two font preloads and the
+     stylesheet pair below as well as the icons. -->
 
-<!-- Content-Security-Policy. GitHub Pages cannot set HTTP headers, so this meta
-     tag is the ONLY CSP this app will ever have. connect-src lists exactly the
-     nine runtime hosts of PLAN section 3.1 / CONTRACT section 10.0 and nothing
-     more; anything not on that list cannot be called, by construction.
+<!-- =========================================================== CSP =========
+
+     GitHub Pages cannot set HTTP headers, so this meta tag is the ONLY CSP
+     this app will ever have. It is written as an exact inventory of what the
+     code actually calls, checked in both directions:
+
+       connect-src  the nine runtime hosts of PLAN section 3.1 / CONTRACT 10.0,
+                    and nothing else. One host per fetching module:
+                      go.js     api-management-discovery-production.azure-api.net
+                                api.irail.be
+                      zoom.js   opendata-api.statbel.fgov.be
+                      around.js geoservices.wallonie.be
+                                geo.onroerenderfgoed.be
+                                catalog.datastore.brussels
+                      around.js data.stad.gent
+                      + now.js  www.odwb.be
+                                opendata.brussels.be
+                    Anything not on that list cannot be called, by construction.
+
+       img-src      'self' for the app's own PNG icons, plus exactly one
+                    third-party host: tile.openstreetmap.org, the OSM raster
+                    basemap (UI_SPEC 1.2). Tiles are <img> loads, never fetch(),
+                    which is why the host appears here and NOT in connect-src.
+                    Their attribution is visible on the page, they live in their
+                    own runtime-only service-worker cache, and they are never
+                    precached: bulk-downloading tiles breaches the OSM tile
+                    usage policy.
+                    `data:` was REMOVED: nothing in web/ uses a data URI. The
+                    icons are inline SVG built with createElementNS (icons.js),
+                    the PWA icons are real PNG files and no stylesheet carries a
+                    url(data:...). If one is ever added, add the scheme back
+                    here in the same commit or it will fail silently.
+
+       Two hosts appear in the source but need NO directive and are correctly
+       absent: www.openstreetmap.org is the attribution's <a href>, which is a
+       navigation and not a subresource, and github.com / jdelsoir.github.io
+       occur only inside go.js's IRAIL_CLIENT string, which is sent to iRail as
+       a query parameter and never requested.
+
+       font-src     deliberately absent. Caprasimo and Figtree are self-hosted
+                    woff2 under /behere/fonts/, so default-src 'self' already
+                    covers them. There is no font CDN anywhere in this app.
+
+     script-src is 'self' with no 'unsafe-inline', which is why the service
+     worker registration lives in app/sw-register.js instead of inline here.
+
      Note: frame-ancestors, sandbox and report-to are header-only and are
      silently ignored in a meta tag, so clickjacking protection is a known and
-     accepted gap on Pages (closing it needs a fronting CDN).
-     script-src is 'self' with no 'unsafe-inline', which is why the service
-     worker registration lives in app/sw-register.js instead of inline here. -->
+     accepted gap on Pages (closing it needs a fronting CDN). -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'self';
                connect-src 'self'
@@ -31,15 +72,19 @@
                  https://data.stad.gent
                  https://opendata.brussels.be
                  https://catalog.datastore.brussels;
-               img-src 'self' data:;
+               img-src 'self' https://tile.openstreetmap.org;
                style-src 'self' 'unsafe-inline';
                script-src 'self';
                base-uri 'none';
                object-src 'none';
                form-action 'none'">
 
-<meta name="theme-color" content="#0f1216" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#1d3a5a">
+<!-- The Organic grounds: cream in light, the derived warm espresso in dark
+     (docs/DESIGN_TOKENS.md section 3). These must track --color-bg in
+     app/tokens.css or the browser chrome will not match the page. -->
+<meta name="theme-color" content="#241a0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5ead8">
+
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -47,194 +92,396 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="BeHERE">
 
+<!-- Self-hosted, OFL-1.1, vendored with their licence text in web/fonts/.
+     Only the two LATIN subsets are preloaded: the latin-ext twins are gated by
+     unicode-range and preloading them would add 12.6 kB of usually-unused
+     transfer to every cold start. crossorigin is required on a font preload
+     even same-origin, or the preload does not match the @font-face request. -->
+<link rel="preload" href="fonts/figtree-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/caprasimo-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+
+<!-- Three sheets, in this order, and the order is load-bearing:
+       tokens.css  the only place a colour, font, space, radius or shadow value
+                   is written down, plus the four self-hosted @font-face rules
+       app.css     the component layer, including the semantic --ink-* roles
+       map.css     the .map* selectors only. It reads app.css's semantic tokens
+                   through var() with a ramp-step fallback, so it renders
+                   correctly whether or not app.css got there first.
+     None of the three @imports anything, and none reaches a remote host. -->
+<link rel="stylesheet" href="app/tokens.css">
 <link rel="stylesheet" href="app/app.css">
+<link rel="stylesheet" href="app/map.css">
+
 <script src="app/sw-register.js" defer></script>
 <script type="module" src="app/main.js"></script>
 </head>
 
 <body>
 
-<!-- ============================================================= header -->
-<header class="app-bar">
-  <h1>Be<b>HERE</b></h1>
-  <div class="langs" role="group" aria-label="Language">
-    <button type="button" data-lang="nl" aria-pressed="false">nl</button>
-    <button type="button" data-lang="fr" aria-pressed="false">fr</button>
-    <button type="button" data-lang="en" aria-pressed="false">en</button>
-    <button type="button" data-lang="auto" aria-pressed="true">auto</button>
-  </div>
-</header>
+<!-- Tab stop 1 (UI_SPEC 3.6). Visually hidden until :focus-visible.
 
-<div class="status">
-  <button type="button" class="btn" id="locate" data-i18n="locate.action">Find where I am</button>
-  <p id="locate-status" role="status" aria-live="polite" data-i18n="locate.idle">
-    Location not requested yet.
-  </p>
-</div>
+     It targets #dock, not #dock-panel. UI_SPEC names the panel, but the panel
+     carries `hidden` whenever no band is open, which is the state the page
+     boots in: a skip link whose target does not exist is a skip link that does
+     nothing, which is worse than no skip link at all. #dock is the <main>
+     landmark, it is always present, and the pills inside it are the bands. -->
+<a class="skip" href="#dock" data-i18n="skip.bands">Skip to the bands</a>
 
-<p class="offline-bar" id="offline-bar" hidden data-i18n="offline.bar">
-  You are offline. Everything below comes from what is stored on this device.
-</p>
+<!--
+  ================================================================== THE MAP
 
-<p class="ios-hint" id="ios-hint" hidden data-i18n="install.ios">
-  To install BeHERE on this iPhone or iPad: Share, then Add to Home Screen.
+  Full-bleed, fixed, beneath everything, never scrolled (UI_SPEC 1).
+
+  #map ships aria-hidden="true" and NO tabindex, which is the right state for
+  the seconds before map.js loads and for the case where it never loads at all:
+  an empty box must not be announced or entered.
+
+  map.js then mounts with { keyboard: true } and takes over: it REMOVES
+  aria-hidden and makes #map a role="group" with exactly ONE tab stop, whose
+  aria-label names the keys (arrows pan, +/- zoom, Home recentres). One stop,
+  never 49: the markers stay role="presentation" spans inside aria-hidden
+  layers, and their keyboard equivalent is the Go band's ordered list. Tab is
+  never intercepted, so the map still cannot trap a keyboard, and everything it
+  draws is still text in a band (UI_SPEC 3.6).
+
+  It is deliberately EMPTY here. web/app/map.js builds all seven layers inside
+  it (.map-tiles, .map-veil, svg.map-vectors, .map-markers, .map-position) and
+  appends them in stacking order, so seeding them from this file would give the
+  page two of each. What index.html guarantees is only that the element EXISTS
+  and that it sits after the skip link: if the element is missing, map.js
+  inserts its own as the first child of <body>, which would put the map's tab
+  stop ahead of the skip link and make the skip link unreachable first.
+
+  With no map module at all this is an empty box over --color-bg, and every
+  question the map answers visually is still answered as text in a band.
+-->
+<div id="map" class="map" aria-hidden="true"></div>
+
+<!--
+  Attribution. ODbL requires it, so it is visible on every frame where a tile
+  has been drawn and it is never inside a collapsed disclosure. It sits OUTSIDE
+  #map on purpose: the link is a real tab stop and #map is aria-hidden.
+  The string is not an i18n key. Translating an attribution is how attributions
+  get lost.
+-->
+<p class="map-attrib" id="map-attrib" hidden>
+  <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>
 </p>
 
 <!--
-  ================================================================= bands
+  ========================================================== TOP-LEFT CHROME
+  The brand pill is the menu: the old <header class="app-bar"> and
+  <footer class="app-foot"> have nowhere to live on a full-bleed map, so the
+  wordmark becomes a control and the footer becomes the sheet it opens.
+  Every id main.js binds is preserved; only the container moved.
+-->
+<div class="chrome chrome--tl">
 
-  FOUR BANDS STACKED ON ONE SCREEN, then a zoom-out section. No tabs, no
-  dashboard, no routing (PLAN section 6, "Screen model").
+  <button type="button" class="brand" id="app-menu"
+          aria-expanded="false" aria-controls="app-sheet">
+    <span class="brand__mark" data-icon="map-pin" data-icon-size="14"></span>
+    <span class="brand__word">BeHERE</span>
+    <span class="brand__place" id="brand-place"></span>
+  </button>
 
-  DOM CONTRACT between this shell and the band modules:
+  <div class="sheet bh-scroll" id="app-sheet" role="group"
+       aria-labelledby="app-sheet-title" hidden>
+    <h2 class="sheet__title" id="app-sheet-title">BeHERE</h2>
+
+    <!-- Native radios, no script beyond the change listener: a single-select
+         is a radio group, not four toggle buttons. This replaces the
+         aria-pressed misuse the old .langs group shipped with. "auto" stays
+         the default and stays the follow-the-ground option (test 5). -->
+    <fieldset class="field">
+      <legend data-i18n="menu.language">Interface language</legend>
+      <!-- The visible text is the language TAG, not the language name: "nl",
+           "fr" and "en" are the same in every interface language and are what
+           fits a four-option segmented control. The full endonym reaches a
+           screen reader through aria-label, written by main.js from the
+           already-shipped lang.* keys. -->
+      <div class="seg langs" role="group" aria-label="Language">
+        <label class="seg-opt"><input type="radio" name="lang" value="nl"><span>nl</span></label>
+        <label class="seg-opt"><input type="radio" name="lang" value="fr"><span>fr</span></label>
+        <label class="seg-opt"><input type="radio" name="lang" value="en"><span>en</span></label>
+        <label class="seg-opt"><input type="radio" name="lang" value="auto" checked><span>auto</span></label>
+      </div>
+      <p class="quiet sheet__note" data-i18n="lang.note">
+        Set from the municipality you are in. Your choice is remembered on this device.
+      </p>
+    </fieldset>
+
+    <!-- Two labelled values rather than one sentence with punctuation baked
+         into the strings: "…, built" cannot be translated without also
+         translating the comma, and the three languages do not put it in the
+         same place. -->
+    <p class="sheet__line">
+      <span data-i18n="foot.vintage">Data vintage</span>
+      <time class="vintage" id="foot-vintage" datetime="2025-01-01">2025-01-01</time>
+      ·
+      <span data-i18n="foot.built">built</span>
+      <span class="vintage" id="foot-built">—</span>
+    </p>
+
+    <!-- What is actually stored on this device. sw.js precaches the pilot
+         cities at install; this line is the honest report of whether that
+         finished, so the app never promises an offline capability it does not
+         have (PLAN section 11). Hidden until the worker has answered, because
+         a wrong claim is worse than no claim. -->
+    <p class="quiet" id="offline-stored" hidden></p>
+
+    <p class="quiet ios-hint" id="ios-hint" hidden data-i18n="install.ios">
+      To install BeHERE on this iPhone or iPad: Share, then Add to Home Screen.
+    </p>
+
+    <details id="sources">
+      <summary>
+        <span data-i18n="action.sources">Sources and vintages</span>
+        <span class="count" id="sources-count"></span>
+      </summary>
+      <div class="disclosure-body">
+        <ul id="sources-list">
+          <li class="quiet" data-i18n="empty.sources">
+            The source list loads with the data manifest.
+          </li>
+        </ul>
+      </div>
+    </details>
+
+    <p class="endonym" data-i18n="flag.endonym">
+      Street and place names are shown in their official local language.
+    </p>
+  </div>
+</div>
+
+<!-- The offline strip. Same id, same data-i18n key, same hidden toggling from
+     main.js's wireChrome(); only its position and its fill changed. -->
+<p class="offline-bar" id="offline-bar" hidden>
+  <span class="offline-bar__mark" data-icon="wifi-off" data-icon-size="14"></span>
+  <span data-i18n="offline.bar">You are offline. Everything below comes from what is stored on this device.</span>
+</p>
+
+<!--
+  ========================================================= TOP-RIGHT CHROME
+  Accuracy chip, locate, zoom, layer chips, tile note. Bottom to top in
+  importance, top to bottom on screen (UI_SPEC 3.4).
+-->
+<div class="chrome chrome--tr">
+
+  <!-- main.js writes "±12 m" here after every fix, and the locating / denied /
+       unavailable copy before one, exactly as it does today. -->
+  <p class="locate-status" id="locate-status" role="status" aria-live="polite"
+     data-i18n="locate.idle">Location not requested yet.</p>
+
+  <button type="button" class="btn btn-primary" id="locate">
+    <span class="btn__mark" data-icon="locate-fixed" data-icon-size="16"></span>
+    <span class="btn__label" data-i18n="locate.action">Find where I am</span>
+  </button>
+
+  <div class="zoomer" role="group" aria-label="Zoom">
+    <button type="button" class="btn btn-secondary btn-icon" id="zoom-out">
+      <span aria-hidden="true">−</span>
+    </button>
+    <span class="map-scale" id="map-scale"></span>
+    <button type="button" class="btn btn-secondary btn-icon" id="zoom-in">
+      <span aria-hidden="true">+</span>
+    </button>
+  </div>
+
+  <!-- The chip ink IS the map ink, so these three are a real legend: the
+       swatch you see here is the stroke you see on the ground. -->
+  <div class="chips" id="layer-chips">
+    <button type="button" class="chip" data-layer="cell" aria-pressed="true">
+      <span class="chip__swatch"></span><span data-i18n="map.layer.cell">1 km cell</span>
+    </button>
+    <button type="button" class="chip" data-layer="sector" aria-pressed="true">
+      <span class="chip__swatch"></span><span data-i18n="map.layer.sector">Sectors</span>
+    </button>
+    <button type="button" class="chip" data-layer="stops" aria-pressed="true">
+      <span class="chip__swatch"></span><span data-i18n="map.layer.stops">Stops</span>
+    </button>
+  </div>
+
+  <!-- Two states only, and the second is not an error style: "no tiles" is an
+       honest statement about what is on screen, not a fault. -->
+  <p class="tile-note" id="tile-note" data-state="off"
+     data-i18n="map.tiles.none">No tiles. Everything drawn is baked on this device.</p>
+</div>
+
+<!--
+  ==================================================================== DOCK
+
+  THE BAND CONTRACT IS UNCHANGED. main.js and every band module still query:
 
     section.band#band-<id>       [data-band] [data-state=idle|locating|ready|
                                  partial|empty|denied|error]
-      header > h2#h-<id>         the band title, data-i18n="band.<id>"
-      p.band-status              the question the band answers, then its status
       div.band-body              [data-role="body"] THE MOUNT POINT. The band
                                  module owns everything inside it and clears it
                                  on its first paint.
       p.src                      [data-role="src"] source and vintage line,
-                                 written by main.js from web/data/meta.json
-                                 via ctx.setSources() (acceptance test 8).
+                                 written by main.js from web/data/meta.json via
+                                 ctx.setSources() (acceptance test 8).
 
-  A band module is mounted as mount(bodyEl, ctx) and refreshed as update(ctx).
+  What changed is only where those five sections live and who prints their
+  title. All five stay mounted inside #dock-panel PERMANENTLY: expanding does
+  not mount and collapsing does not unmount, only `hidden` moves. That is what
+  keeps app.bands, BAND_ADAPTER, setSources() and the go/now root:"section"
+  adapters working exactly as written, and what keeps a band's in-flight fetch
+  from being thrown away every time the reader glances at another band.
 
-  The copy already inside each .band-body is a PLACEHOLDER: it survives until
-  that band's module paints over it, and it stays for good if the module is not
-  in this build. That is why it is written out in full rather than left empty.
-  First paint is never blank, and a band with no module still reads as a
-  deliberate, styled panel instead of a hole in the page.
+  The per-section <header><h2> is gone: the single visible title is
+  .panel-title, written by main.js when a band opens. around.js already detects
+  the headerless case and main.js already passes chrome:false, so no band
+  module changes.
+
+  The copy inside each .band-body is a PLACEHOLDER: it survives until that
+  band's module paints over it, and it stays for good if the module is not in
+  this build. First paint is never blank, and a band with no module still reads
+  as a deliberate panel instead of a hole.
+
+  <main> rather than <div>: these five bands are the document's main content,
+  and app/sw-register.js anchors its update notice to querySelector("main").
 -->
+<main class="dock" id="dock" tabindex="-1">
 
-<main>
-
-  <!-- ------------------------------------------------------------ HERE -->
-  <section class="band" id="band-here" data-band="here" data-state="idle"
-           aria-labelledby="h-here">
-    <header>
-      <h2 id="h-here" data-i18n="band.here">Here</h2>
-      <p class="band-status" data-i18n="band.here.q">Where am I?</p>
+  <div class="dock-panel" id="dock-panel" hidden>
+    <header class="panel-head">
+      <div class="panel-head__text">
+        <p class="panel-kicker" id="panel-kicker"></p>
+        <h2 class="panel-title" id="panel-title"></h2>
+      </div>
+      <button type="button" class="btn btn-secondary btn-icon panel-close"
+              id="panel-close" data-icon="x" data-icon-size="16"></button>
     </header>
-    <div class="band-body" data-role="body">
-      <p class="quiet" data-i18n="empty.here.idle">
-        Waiting for your location. Nothing is sent anywhere: the addresses,
-        neighbourhoods and municipalities of the seven pilot cities are already
-        stored on this device.
-      </p>
-    </div>
-    <p class="src" data-role="src" hidden></p>
-  </section>
 
-  <!-- ---------------------------------------------------------- AROUND -->
-  <section class="band" id="band-around" data-band="around" data-state="idle"
-           aria-labelledby="h-around">
-    <header>
-      <h2 id="h-around" data-i18n="band.around">Around</h2>
-      <p class="band-status" data-i18n="band.around.q">What is around me?</p>
-    </header>
-    <div class="band-body" data-role="body">
-      <p class="quiet" data-i18n="empty.around.idle">
-        Heritage, tourism, parks, markets, recycling and charging points appear
-        here, sorted by real distance, once your position is known.
-      </p>
-    </div>
-    <p class="src" data-role="src" hidden></p>
-  </section>
+    <div class="panel-body bh-scroll" id="panel-body">
 
-  <!-- -------------------------------------------------------------- GO -->
-  <section class="band" id="band-go" data-band="go" data-state="idle"
-           aria-labelledby="h-go">
-    <header>
-      <h2 id="h-go" data-i18n="band.go">Go</h2>
-      <p class="band-status" data-i18n="band.go.q">How do I get there?</p>
-    </header>
-    <div class="band-body" data-role="body">
-      <p class="quiet" data-i18n="empty.go.idle">
-        The nearest stops of De Lijn, TEC, STIB-MIVB and NMBS-SNCB are stored on
-        this device. Live departures need a network.
-      </p>
-    </div>
-    <p class="src" data-role="src" hidden></p>
-  </section>
+      <!-- ---------------------------------------------------------- HERE -->
+      <section class="band" id="band-here" data-band="here" data-state="idle"
+               tabindex="-1" aria-labelledby="panel-title">
+        <div class="band-body" data-role="body">
+          <p class="quiet" data-i18n="empty.here.idle">
+            Waiting for your location. Nothing is sent anywhere: the addresses,
+            neighbourhoods and municipalities of the seven pilot cities are
+            already stored on this device.
+          </p>
+        </div>
+        <p class="src" data-role="src" hidden></p>
+      </section>
 
-  <!-- ------------------------------------------------------------- NOW -->
-  <section class="band" id="band-now" data-band="now" data-state="idle"
-           aria-labelledby="h-now">
-    <header>
-      <h2 id="h-now" data-i18n="band.now">Now</h2>
-      <p class="band-status" data-i18n="band.now.q">What can I do?</p>
-    </header>
-    <div class="band-body" data-role="body">
-      <p class="quiet" data-i18n="empty.now.idle">
-        What is open, collected or happening today, once your position is known.
-      </p>
-    </div>
-    <p class="src" data-role="src" hidden></p>
-  </section>
+      <!-- -------------------------------------------------------- AROUND -->
+      <section class="band" id="band-around" data-band="around" data-state="idle"
+               tabindex="-1" aria-labelledby="panel-title" hidden>
+        <div class="band-body" data-role="body">
+          <p class="quiet" data-i18n="empty.around.idle">
+            Heritage, tourism, parks, markets, recycling and charging points appear
+            here, sorted by real distance, once your position is known.
+          </p>
+        </div>
+        <p class="src" data-role="src" hidden></p>
+      </section>
 
-  <!-- ------------------------------------------------------------- ZOOM
-       Province and country context. Deliberately NOT a comparator: no league
-       table, no ranking, no "your town versus theirs" (PLAN section 1).
-       Keys on nuts3 from <nis>/meta.json, never on the municipality NIS,
-       because no Statbel HVD table reaches municipality level (CONTRACT 10.3).
-  -->
-  <section class="band" id="band-zoom" data-band="zoom" data-state="idle"
-           aria-labelledby="h-zoom">
-    <header>
-      <h2 id="h-zoom" data-i18n="band.zoomout">Zoom out</h2>
-      <p class="band-status" data-i18n="band.zoomout.q">How does this fit in?</p>
-    </header>
-    <div class="band-body" data-role="body">
-      <p class="quiet" data-i18n="empty.zoomout.idle">
-        Context for the arrondissement and for Belgium appears here. It is
-        context, never a ranking.
-      </p>
-    </div>
-    <p class="src" data-role="src" hidden></p>
-  </section>
+      <!-- ------------------------------------------------------------ GO -->
+      <section class="band" id="band-go" data-band="go" data-state="idle"
+               tabindex="-1" aria-labelledby="panel-title" hidden>
+        <div class="band-body" data-role="body">
+          <p class="quiet" data-i18n="empty.go.idle">
+            The nearest stops of De Lijn, TEC, STIB-MIVB and NMBS-SNCB are stored on
+            this device. Live departures need a network.
+          </p>
+        </div>
+        <p class="src" data-role="src" hidden></p>
+      </section>
 
+      <!-- ----------------------------------------------------------- NOW -->
+      <section class="band" id="band-now" data-band="now" data-state="idle"
+               tabindex="-1" aria-labelledby="panel-title" hidden>
+        <div class="band-body" data-role="body">
+          <p class="quiet" data-i18n="empty.now.idle">
+            What is open, collected or happening today, once your position is known.
+          </p>
+        </div>
+        <p class="src" data-role="src" hidden></p>
+      </section>
+
+      <!-- ----------------------------------------------------------- ZOOM
+           Province and country context. Deliberately NOT a comparator: no
+           league table, no ranking, no "your town versus theirs" (PLAN
+           section 1). Keys on nuts3 from <nis>/meta.json, never on the
+           municipality NIS, because no Statbel HVD table reaches municipality
+           level (CONTRACT 10.3). -->
+      <section class="band" id="band-zoom" data-band="zoom" data-state="idle"
+               tabindex="-1" aria-labelledby="panel-title" hidden>
+        <div class="band-body" data-role="body">
+          <p class="quiet" data-i18n="empty.zoomout.idle">
+            Context for the arrondissement and for Belgium appears here. It is
+            context, never a ranking.
+          </p>
+        </div>
+        <p class="src" data-role="src" hidden></p>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Five disclosures, ONE tab stop, roving tabindex (UI_SPEC 3.6). This is
+       the disclosure pattern rather than the tabs pattern because "no panel at
+       all" is a real state here and the tabs pattern has no name for it. The
+       state dot is reinforcement only: the same fact is in .pill__count as
+       words, so the signal survives a monochrome rendering. -->
+  <div class="dock-pills" id="dock-pills" role="group" aria-label="Bands">
+
+    <button type="button" class="pill" id="pill-here"
+            data-band="here" aria-expanded="false" aria-controls="band-here">
+      <span class="pill__state" data-state="idle"></span>
+      <span class="pill__text">
+        <span class="pill__label" data-i18n="band.here">Here</span>
+        <span class="pill__count"></span>
+      </span>
+    </button>
+
+    <button type="button" class="pill" id="pill-around"
+            data-band="around" aria-expanded="false" aria-controls="band-around" tabindex="-1">
+      <span class="pill__state" data-state="idle"></span>
+      <span class="pill__text">
+        <span class="pill__label" data-i18n="band.around">Around</span>
+        <span class="pill__count"></span>
+      </span>
+    </button>
+
+    <button type="button" class="pill" id="pill-go"
+            data-band="go" aria-expanded="false" aria-controls="band-go" tabindex="-1">
+      <span class="pill__state" data-state="idle"></span>
+      <span class="pill__text">
+        <span class="pill__label" data-i18n="band.go">Go</span>
+        <span class="pill__count"></span>
+      </span>
+    </button>
+
+    <button type="button" class="pill" id="pill-now"
+            data-band="now" aria-expanded="false" aria-controls="band-now" tabindex="-1">
+      <span class="pill__state" data-state="idle"></span>
+      <span class="pill__text">
+        <span class="pill__label" data-i18n="band.now">Now</span>
+        <span class="pill__count"></span>
+      </span>
+    </button>
+
+    <button type="button" class="pill" id="pill-zoom"
+            data-band="zoom" aria-expanded="false" aria-controls="band-zoom" tabindex="-1">
+      <span class="pill__state" data-state="idle"></span>
+      <span class="pill__text">
+        <span class="pill__label" data-i18n="band.zoomout">Zoom out</span>
+        <span class="pill__count"></span>
+      </span>
+    </button>
+
+  </div>
 </main>
 
-<!-- ============================================================= footer -->
-<footer class="app-foot">
-  <!-- Two labelled values rather than one sentence with punctuation baked into
-       the strings: "…, built" cannot be translated without also translating
-       the comma, and the three languages do not put it in the same place. -->
-  <p>
-    <span data-i18n="foot.vintage">Data vintage</span>
-    <time class="vintage" id="foot-vintage" datetime="2025-01-01">2025-01-01</time>
-    ·
-    <span data-i18n="foot.built">built</span>
-    <span class="vintage" id="foot-built">—</span>
-  </p>
-
-  <!-- What is actually stored on this device. sw.js precaches the seven cities
-       at install; this line is the honest report of whether that finished, so
-       the app never promises an offline capability it does not have (PLAN
-       section 11, "a cold start must work with no cache"). Hidden until the
-       worker has answered, because a wrong claim is worse than no claim. -->
-  <p class="quiet" id="offline-stored" hidden></p>
-
-  <details id="sources">
-    <summary>
-      <span data-i18n="action.sources">Sources and vintages</span>
-      <span class="count" id="sources-count"></span>
-    </summary>
-    <div class="disclosure-body">
-      <ul id="sources-list">
-        <li class="quiet" data-i18n="empty.sources">
-          The source list loads with the data manifest.
-        </li>
-      </ul>
-    </div>
-  </details>
-
-  <p class="endonym" data-i18n="flag.endonym">
-    Street and place names are shown in their official local language.
-  </p>
-</footer>
+<!-- The map's only announcement channel. One polite status, written by
+     main.js after a scale or centre change, because #map itself is
+     aria-hidden and a screen-reader user must lose nothing. -->
+<p class="map-status sr-only" id="map-status" role="status" aria-live="polite"></p>
 
 </body>
 </html>

@@ -42,6 +42,20 @@ web/data/precache.json
 web/data/grid/
 web/data/[0-9][0-9][0-9][0-9][0-9]/
 
+# -------------------------------------------------------------- design source
+#
+# The design prototype ships as `design/*.zip`, which is the export of record.
+# The extracted copy is derived from it and byte-identical (verified), so it is
+# not committed twice.
+#
+# There is a second reason to keep the loose files out. The prototype loads
+# React from unpkg.com and its design system @imports fonts.googleapis.com.
+# Neither survived into web/ and neither ever may. Leaving the extracted copy
+# untracked keeps `grep -rn react web/ scripts/` honest: a hit means a real
+# regression, not a design reference. Unzip it when you need to read it.
+#
+design/prototype/
+
 # ------------------------------------------------------------------- python
 __pycache__/
 *.py[cod]

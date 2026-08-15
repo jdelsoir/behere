@@ -58,6 +58,22 @@
  * There is no polling loop; update() only refetches when the arrondissement
  * changes or the previous attempt failed.
  *
+ * ---------------------------------------------------------------------------
+ * WHAT THE MAP-FIRST REVAMP CHANGED HERE
+ * ---------------------------------------------------------------------------
+ * Presentation, and one attribute. The band renders into the pill-overlay
+ * panel of docs/UI_SPEC.md: notes carry a kind label and a tone, the figures
+ * are cards in `ul.stats`, and the two join keys are on screen so the claim
+ * this file's title makes can be checked rather than trusted. The one
+ * behavioural change is that an unreachable Statbel now sets the section to
+ * data-state="error" rather than "empty", because UI_SPEC 2.5 insists that
+ * "published nothing", "out of scope by design" and "could not be reached"
+ * are three different claims and only the last is a fault.
+ *
+ * The endpoint, the folds, the keys, the five-GET budget and every path
+ * through the vintage guard are untouched. This band draws nothing on the map:
+ * an arrondissement is not a place, it is a level.
+ *
  * Plain ES module. No build step, no bundler, no dependency outside this repo.
  */
 
@@ -73,6 +89,17 @@ import { joinStatistic, indexHistory, JOIN, needsAggregateMarker } from "./stats
  * and fails the build when a key here is missing from any shipped language. */
 export const ZOOM_UI_DEFAULTS = Object.freeze({
   "band.zoomout": "Zoom out",
+
+  /* The note kind labels, UI_SPEC 2.3, declared here as well as in here.js
+   * because scripts/check_i18n.py reads each band's own table and a shared key
+   * asked for by two bands has to be visible in both. The kind is what makes
+   * UI_SPEC 2.5's three situations distinguishable without reading the whole
+   * sentence, and this band is the one band in the app that can be in all
+   * three: Statbel is a live source. */
+  "note.waiting": "Waiting for a position",
+  "note.nothing": "Published nothing",
+  "note.scope": "Out of scope by design",
+  "note.unreachable": "Could not be reached",
 
   "zoom.district": "Arrondissement",
   "zoom.country": "Belgium",
@@ -98,6 +125,11 @@ export const ZOOM_UI_DEFAULTS = Object.freeze({
 
   "zoom.refused": "Not shown: {why}",
   "zoom.aggregate": "Aggregate across two municipal vintages: {why}",
+
+  /* UI_SPEC 2.5, "the source lines, verbatim". The second line under the
+   * source line: why these keys and no others. No date is written into it;
+   * every vintage comes from meta.json through setSources(). */
+  "zoom.src.why": "Queries key on nuts3 and dstr. No Statbel table reaches municipality level.",
 });
 
 /** The keys this band asks for, exported so the i18n files can be diffed. */
@@ -349,6 +381,54 @@ function el(tag, attrs, ...children) {
  */
 const UNTRANSLATED_MARK = " *";
 
+/**
+ * The four honest ways this band can have nothing to say, as a `data-empty`
+ * value. UI_SPEC 2.5 names the first three and they are not one thing:
+ *
+ *   published-nothing  Statbel answered and published none of these figures
+ *   out-of-scope       no NIS resolves here, or the record carries no
+ *                      arrondissement code, so no query can even be formed
+ *   unreachable        THE ONLY FAULT: Statbel could not be reached, and
+ *                      nothing from it is stored on this device yet
+ *   idle               no position yet, so nothing has been asked of anything
+ *
+ * This is the one band in the app that can genuinely be in all four, because
+ * it is the one band fed by a live source rather than by baked shards.
+ */
+export const NOTHING = Object.freeze({
+  PUBLISHED_NOTHING: "published-nothing",
+  OUT_OF_SCOPE: "out-of-scope",
+  UNREACHABLE: "unreachable",
+  IDLE: "idle",
+});
+
+/**
+ * One note: a kind label over a body, in a quiet or a warn box (UI_SPEC 2.3).
+ *
+ * THE TONE RULE. Warn is only ever for data that is real but old, or for a
+ * source that could not be reached. It is never used for "published nothing",
+ * because a Statbel table that simply has no row for this arrondissement has
+ * not failed, and an app that paints that amber is lying about its own health.
+ *
+ * The class stays `.quiet` (or `.asof` for the stale line), which is app.css's
+ * existing vocabulary; the tone rides on `data-tone`, so a stylesheet that has
+ * not been told about warn notes still renders a calm, correct box.
+ *
+ * @param {{layer?:string, body:string, kind?:string, tone?:"quiet"|"warn",
+ *          empty?:string, className?:string}} spec
+ */
+function noteEl(spec) {
+  const p = el("p", {
+    class: spec.className || "quiet",
+    "data-layer": spec.layer || null,
+    "data-tone": spec.tone || "quiet",
+    "data-empty": spec.empty || null,
+  });
+  if (spec.kind) p.appendChild(el("strong", { class: "note__kind", text: spec.kind }));
+  p.appendChild(el("span", { class: "note__body", text: spec.body }));
+  return p;
+}
+
 /** ctx.t(), with this band's English defaults behind it. Never blank. */
 function makeT(ctx) {
   const lang = (ctx && (ctx.lang || ctx.uiLang)) || "en";
@@ -392,10 +472,16 @@ function fmtRatio(v, lang, digits) {
  *  gap reads as a decision rather than as a rendering failure (acceptance
  *  test 3, "never silently dropped", and the never-render-an-empty-panel
  *  rule in CLAUDE.md). */
-function tile(list, t, lang, label, join, render, sub) {
+function tile(list, t, lang, label, join, render, sub, key) {
   if (!join || !join.ok) {
     const why = (join && join.note) || "";
-    list.appendChild(el("li", { class: "stat--withheld" },
+    // No `data-empty`: a refused join is not one of UI_SPEC 2.5's three ways
+    // of having nothing to say. The figure exists and Statbel published it;
+    // this app declines to attach it to a place it cannot honestly attach it
+    // to. That is a decision, and `data-state="withheld"` is its name.
+    list.appendChild(el("li", {
+      class: "stat--withheld", "data-fact": key || null, "data-state": "withheld",
+    },
       el("span", { class: "k", text: label }),
       el("span", { class: "k", text: t("zoom.refused", { why }) })
     ));
@@ -409,16 +495,38 @@ function tile(list, t, lang, label, join, render, sub) {
       class: "untranslated", title: aggregate, "aria-label": aggregate, text: "*",
     }));
   }
-  const li = el("li", null, value, el("span", { class: "k", text: label }));
+  const li = el("li", { "data-fact": key || null, "data-join": join.kind || null },
+    value, el("span", { class: "k", text: label }));
   if (sub) li.appendChild(el("span", { class: "k", text: sub }));
   if (marked) li.appendChild(el("span", { class: "k", text: aggregate }));
   list.appendChild(li);
 }
 
-/** Copy that names what is missing. Never a blank panel. */
-function collapse(host, text) {
+/**
+ * Copy that names what is missing. Never a blank panel.
+ *
+ * `empty` is UI_SPEC 2.5's taxonomy and it decides the tone: only
+ * `unreachable` is a fault and only `unreachable` gets the warn fill. A
+ * position that has not arrived, an arrondissement that cannot be keyed and a
+ * table that published nothing are all correct outcomes, and all three stay
+ * quiet.
+ */
+function collapse(host, t, text, empty) {
+  const failed = empty === NOTHING.UNREACHABLE;
+  const KIND = {
+    [NOTHING.IDLE]: "note.waiting",
+    [NOTHING.OUT_OF_SCOPE]: "note.scope",
+    [NOTHING.PUBLISHED_NOTHING]: "note.nothing",
+    [NOTHING.UNREACHABLE]: "note.unreachable",
+  };
   host.textContent = "";
-  host.appendChild(el("p", { class: "quiet", text }));
+  host.appendChild(noteEl({
+    layer: "zoom",
+    empty: empty || null,
+    tone: failed ? "warn" : "quiet",
+    kind: KIND[empty] ? t(KIND[empty]) : null,
+    body: text,
+  }));
 }
 
 function arrondissementName(figures, lang) {
@@ -433,20 +541,33 @@ function render(host, ctx, figures, g) {
 
   // The administrative LEVEL is named explicitly. No Statbel table reaches
   // municipality level (CONTRACT 10.3), and a reader who thinks these are
-  // their town's numbers has been misled by the layout alone.
+  // their town's numbers has been misled by the layout alone. So the level is
+  // the line under the name, not a parenthesis inside it.
   const districtName = arrondissementName(figures, lang);
-  host.appendChild(el("p", { class: "answer" },
+  host.appendChild(el("p", { class: "answer", "data-layer": "district" },
     el("span", { class: "name", lang: figures.names && figures.names[lang] ? lang : null,
-      text: districtName }),
-    el("span", { class: "sub", text: " " + t("zoom.district") })
+      text: districtName })
   ));
+
+  // The two join keys, on screen. This band's central claim is that it keys on
+  // nuts3 and dstr and never on the municipality NIS, and a claim the reader
+  // cannot check is a claim they have to take on trust.
+  const keyBits = [];
+  if (figures.nuts3) keyBits.push(el("span", { class: "code", "data-fact": "nuts3", text: figures.nuts3 }));
+  if (figures.dstr) {
+    if (keyBits.length) keyBits.push(document.createTextNode(" · "));
+    keyBits.push(el("span", { class: "code", "data-fact": "dstr", text: figures.dstr }));
+  }
+  if (keyBits.length) keyBits.push(document.createTextNode(" "));
+  keyBits.push(el("span", { class: "sub", text: t("zoom.district") }));
+  host.appendChild(el("p", { class: "sub", "data-layer": "keys" }, keyBits));
 
   const list = el("ul", { class: "stats" });
   let shown = 0;
 
   if (figures.population !== null) {
     const j = guardFigure(g, figures.popYear, figures.population, false);
-    tile(list, t, lang, t("zoom.population"), j, (v) => fmtInt(v, lang));
+    tile(list, t, lang, t("zoom.population"), j, (v) => fmtInt(v, lang), null, "population");
     shown++;
   }
   // Statbel publishes the median age per sex and never as a total, so the two
@@ -459,13 +580,13 @@ function render(host, ctx, figures, g) {
       (v) => t("zoom.medianage.value", {
         m: fmtInt(v.m, lang), f: fmtInt(v.f, lang),
       }),
-      t("zoom.medianage.note"));
+      t("zoom.medianage.note"), "medianage");
     shown++;
   }
   if (figures.dependency !== null) {
     const j = guardFigure(g, figures.popYear, figures.dependency, false);
     tile(list, t, lang, t("zoom.dependency"), j, (v) => fmtRatio(v, lang, 2),
-      t("zoom.dependency.note"));
+      t("zoom.dependency.note"), "dependency");
     shown++;
   }
   for (const [key, here, be] of [
@@ -474,24 +595,51 @@ function render(host, ctx, figures, g) {
   ]) {
     if (!here) continue;
     const j = guardFigure(g, here.year, here.value, true);
-    const beText = be ? " · " + t("zoom.country") + " " + fmtRatio(be.value * 1000, lang, 1) : "";
+    // The country figure is the card's own second line now, not a clause
+    // appended to the first, so it drops the leading separator it carried when
+    // the whole tile was one run of text.
+    const beText = be ? t("zoom.country") + " " + fmtRatio(be.value * 1000, lang, 1) : "";
     tile(list, t, lang, t(key) + " " + t("zoom.year", { y: here.year }), j,
-      (v) => fmtRatio(v * 1000, lang, 1), beText || null);
+      (v) => fmtRatio(v * 1000, lang, 1), beText || null, key.split(".").pop());
     shown++;
   }
 
   if (!shown) {
-    collapse(host, t("empty.zoom.novalues"));
+    // Statbel answered. It simply has none of these figures for this
+    // arrondissement, which is a published-nothing, not a fault.
+    collapse(host, t, t("empty.zoom.novalues"), NOTHING.PUBLISHED_NOTHING);
     return false;
   }
   host.appendChild(list);
 
-  host.appendChild(el("p", { class: "quiet", text: t("zoom.context") }));
+  // Not an empty state and not a caveat about age: it is the sentence that
+  // says what this band refuses to be. No kind label, because a kind label
+  // would make a statement of intent look like a report of a gap.
+  host.appendChild(noteEl({ layer: "context", body: t("zoom.context") }));
+
   if (figures.at) {
     const when = new Date(figures.at).toISOString().slice(0, 10);
-    host.appendChild(el("p", { class: "asof", text: t("zoom.asof", { when }) }));
+    host.appendChild(el("p", {
+      class: "asof", "data-layer": "asof", "data-tone": "warn",
+      text: t("zoom.asof", { when }),
+    }));
   }
-  if (figures.stale) host.appendChild(el("p", { class: "asof", text: t("zoom.stale") }));
+  // Real data, but old, AND the source could not be reached this time: the one
+  // place in this band where both halves of the warn tone are true at once.
+  if (figures.stale) {
+    host.appendChild(noteEl({
+      className: "asof", layer: "stale", tone: "warn",
+      empty: NOTHING.UNREACHABLE, kind: t("note.unreachable"), body: t("zoom.stale"),
+    }));
+  }
+
+  // UI_SPEC 2.5: the second line under the source line, at the same size.
+  // It comes first because it reads as the lead-in to it, and because under
+  // the shell the source line is p.src[data-role="src"], a sibling of this
+  // body that main.js owns and that this module must not write into.
+  host.appendChild(el("p", {
+    class: "src src__why", "data-layer": "why", text: t("zoom.src.why"),
+  }));
   return true;
 }
 
@@ -518,9 +666,18 @@ export function mount(host, ctx) {
   function section() {
     return host && host.closest ? host.closest("section.band") : null;
   }
-  function setState(name) {
+  /**
+   * `data-state` is what app.css keys on and what dock.js reads for the pill's
+   * state dot (UI_SPEC 2.2). `data-empty` is the finer taxonomy underneath it:
+   * "empty" is one word for three different situations and only one of them is
+   * a fault, so the section carries both.
+   */
+  function setState(name, empty) {
     const s = section();
-    if (s) s.dataset.state = name;
+    if (!s) return;
+    s.dataset.state = name;
+    if (empty) s.dataset.empty = empty;
+    else delete s.dataset.empty;
   }
 
   async function history() {
@@ -550,18 +707,21 @@ export function mount(host, ctx) {
     const m = current.muntyMeta;
 
     if (!current.position) {
-      collapse(host, t("empty.zoom.position"));
-      setState("idle");
+      collapse(host, t, t("empty.zoom.position"), NOTHING.IDLE);
+      setState("idle", NOTHING.IDLE);
       return;
     }
+    // Out of scope by design, twice over: no municipality resolves here, or
+    // the record that does carries no arrondissement code. Either way no query
+    // can be formed, so nothing was asked and nothing failed.
     if (!current.nis || !m) {
-      collapse(host, t("empty.zoom.municipality"));
-      setState("empty");
+      collapse(host, t, t("empty.zoom.municipality"), NOTHING.OUT_OF_SCOPE);
+      setState("empty", NOTHING.OUT_OF_SCOPE);
       return;
     }
     if (!m.nuts3 || !m.dstr) {
-      collapse(host, t("empty.zoom.nuts3"));
-      setState("empty");
+      collapse(host, t, t("empty.zoom.nuts3"), NOTHING.OUT_OF_SCOPE);
+      setState("empty", NOTHING.OUT_OF_SCOPE);
       return;
     }
 
@@ -581,8 +741,11 @@ export function mount(host, ctx) {
     }
 
     if (!figures.reached) {
-      collapse(host, t(current.online ? "empty.zoom.unreachable" : "empty.zoom.offline"));
-      setState("empty");
+      // The only fault in this band, and the only warn tone: a live source was
+      // asked and did not answer, and nothing from it is stored here yet.
+      collapse(host, t, t(current.online ? "empty.zoom.unreachable" : "empty.zoom.offline"),
+        NOTHING.UNREACHABLE);
+      setState("error", NOTHING.UNREACHABLE);
       return;
     }
 
@@ -590,7 +753,7 @@ export function mount(host, ctx) {
     if (destroyed || gen !== generation) return;
 
     const drew = render(host, current, figures, guardArgs(hist));
-    setState(drew ? "ready" : "empty");
+    setState(drew ? "ready" : "empty", drew ? null : NOTHING.PUBLISHED_NOTHING);
     if (drew && typeof current.setSources === "function") {
       current.setSources("zoom", ZOOM_SOURCE_IDS[0]);
     }
@@ -599,8 +762,9 @@ export function mount(host, ctx) {
   function run() {
     paint().catch((err) => {
       console.error("BeHERE: zoom band failed", err);
-      collapse(host, makeT(current)("empty.zoom.unreachable"));
-      setState("error");
+      const t = makeT(current);
+      collapse(host, t, t("empty.zoom.unreachable"), NOTHING.UNREACHABLE);
+      setState("error", NOTHING.UNREACHABLE);
     });
   }
 
@@ -628,3 +792,62 @@ export function mount(host, ctx) {
 }
 
 export default mount;
+
+/*
+ * ---------------------------------------------------------------------------
+ * MARKUP CONTRACT: what this module writes into div.band-body[data-role=body]
+ * ---------------------------------------------------------------------------
+ * Classes are app.css's existing vocabulary, unchanged by the map-first
+ * revamp: UI_SPEC 4.2 restyles every one of them and renames none. Everything
+ * else is a data-* hook. No styles are written here, no inline style attribute
+ * is ever set, and no icon is drawn: inside a band body every glyph would sit
+ * beside text that already says the same thing.
+ *
+ *   p.answer[data-layer="district"]
+ *       span.name[lang]              the arrondissement, as Statbel authored it
+ *   p.sub[data-layer="keys"]
+ *       span.code[data-fact="nuts3"] BE234
+ *       span.code[data-fact="dstr"]  44000
+ *       span.sub                     "Arrondissement", naming the LEVEL, which
+ *                                    is the one thing a reader must not guess
+ *
+ *   ul.stats > li[data-fact=KEY][data-join=KIND]
+ *       span.v                       the figure, display size
+ *         sup.untranslated           the aggregate marker, with its reason
+ *       span.k                       the label, then the note, then the reason
+ *     KEY is one of: population, medianage, dependency, birthrate, deathrate
+ *     KIND is stats.js's JOIN result for the figure in that tile
+ *
+ *   li.stat--withheld[data-state="withheld"][data-empty="out-of-scope"]
+ *       a figure the vintage guard REFUSED. It carries no span.v on purpose:
+ *       an em dash in the number slot reads as a rendering failure, while the
+ *       label plus the reason reads as the deliberate refusal it is
+ *       (acceptance test 3, "never silently dropped").
+ *
+ *   p.quiet[data-layer=L][data-tone="quiet"|"warn"][data-empty=E?]
+ *       strong.note__kind            the kind label, e.g. "COULD NOT BE REACHED"
+ *       span.note__body              the sentence
+ *     L is one of: zoom (the collapsed band), context
+ *     E is one of: published-nothing, out-of-scope, unreachable, idle
+ *
+ *   p.asof[data-layer="asof"][data-tone="warn"]     "Statistics as of {when}."
+ *   p.asof[data-layer="stale"][data-tone="warn"][data-empty="unreachable"]
+ *       real figures, stored earlier, with Statbel unreachable now
+ *   p.src.src__why[data-layer="why"]  why nuts3 and dstr and never the NIS
+ *
+ *   app.css MUST give .note__kind `display: block` (UI_SPEC 2.3: 11px, .08em,
+ *   uppercase, opacity .72, margin-bottom 4px). Without that rule the kind and
+ *   the body run together on one line; nothing else breaks.
+ *
+ * ON THE SECTION, via host.closest("section.band"):
+ *   data-state  idle | ready | empty | error
+ *   data-empty  the UI_SPEC 2.5 taxonomy underneath "empty", so dock.js can
+ *               tell the pill's state dot which of the three it is
+ *
+ *   CHANGED BY THE REVAMP, and it is the only behavioural change in this file:
+ *   an unreachable Statbel used to set data-state="empty". UI_SPEC 2.5 puts it
+ *   at "error", because absent and broken are different claims and this band
+ *   is the one band that can be either. Nothing else about the fetch, the
+ *   fold, the keys or the vintage guard moved.
+ * ---------------------------------------------------------------------------
+ */

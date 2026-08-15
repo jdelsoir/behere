@@ -68,6 +68,54 @@
 import { neighbours, wgs84ToCell } from "./grid.js";
 import { haversineMetres } from "./geo.js";
 import { decodeTripUpdates, decodeAlerts, decodeVehiclePositions } from "./gtfsrt.js";
+import { icon } from "./icons.js";
+
+// ---------------------------------------------------------------------------
+// THE MAP-MARKER CONTRACT (identical in around.js, go.js and now.js)
+// ---------------------------------------------------------------------------
+//
+// The revamp draws a map under the bands (docs/UI_SPEC.md section 1), and the
+// Stops layer on it is THIS band's boarding points. The map does not re-read a
+// shard, does not re-group platforms and does not re-sort: `groupStops` already
+// decided which places to stand there are and in what order, and re-deriving
+// that in map.js would be a second opinion about the same fact.
+//
+//   getMarkers()            -> BandMarker[]   ascending metres, one per
+//                                             BOARDING POINT (a `ps` parent
+//                                             station is one marker, not one
+//                                             per platform), exactly the rows
+//                                             of ol.go-stops and in that order
+//   onMarkers(fn)           -> unsubscribe()  fires after every render pass
+//   select(key, opts)       -> boolean        true when this band owns the key
+//   getSelected()           -> string | null
+//   onSelect(fn)            -> unsubscribe()  fires when the READER picks a stop
+//   getSummary()            -> {id, state, count, markers}
+//
+// The key is the boarding key, `"<operator>|<parent or stop id>"`, which is the
+// same string `view.departures` and `lastBoards.nap` are keyed on. It is stable
+// across renders and across positions, so a marker selected on the map survives
+// the next fix if the stop is still in range.
+//
+// UI_SPEC 3.6: markers are `role="presentation"` and take no tab stop. Their
+// keyboard equivalent is `ol.go-stops`, which is why every marker here has a
+// card in the panel and why the two are in the same order.
+//
+/**
+ * @typedef {Object} BandMarker
+ * @property {"go"} band
+ * @property {string} key      "<operator>|<parent or stop id>"
+ * @property {number} lat
+ * @property {number} lon
+ * @property {string} label    Resolved through CONTRACT section 9. Never
+ *                             machine-translated: `Kruidtuin` stays Dutch.
+ * @property {string} lang     BCP-47 tag for `label`.
+ * @property {"stops"} kind    The layer chip that owns it.
+ * @property {number} dist     Real haversine metres.
+ * @property {string} op       Operator slug: delijn|tec|stibmivb|nmbssncb.
+ * @property {number} platforms How many stops this boarding point collapses.
+ * @property {string} sourceId Joins meta.json.sources[].id.
+ * @property {string} vintage  The shard vintage the stop was baked from.
+ */
 
 // ---------------------------------------------------------------- constants
 
@@ -293,6 +341,29 @@ function el(tag, cls, text) {
   return n;
 }
 
+/**
+ * Bring a card into view INSIDE the scrolling panel body, and nowhere else.
+ *
+ * `block: "nearest"` is load-bearing: the page itself does not scroll in the
+ * revamped shell (`html, body { overflow: hidden }`), and "center" would ask
+ * every scrollable ancestor to move, the map's own container included.
+ * Smooth scrolling is dropped under `prefers-reduced-motion`.
+ */
+function scrollIntoPanel(node) {
+  if (!node || typeof node.scrollIntoView !== "function") return;
+  let smooth = false;
+  try {
+    smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    smooth = false;
+  }
+  try {
+    node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: smooth ? "smooth" : "auto" });
+  } catch {
+    node.scrollIntoView(false);
+  }
+}
+
 /** Distance for humans: metres below 1 km, then one decimal of a kilometre. */
 function fmtDistance(m) {
   if (!isFinite(m)) return "";
@@ -390,6 +461,83 @@ export function createGoBand(section, ctx = {}) {
   let destroyed = false;
 
   const lastBoards = loadStore(cfg.storage);
+
+  /* ------------------------------------------------ the map surface -------
+   * See the contract at the head of this file. Nothing below fetches, and
+   * nothing below is driven by the map: these are the boarding points the band
+   * already drew, published so map.js can draw the same ones. */
+
+  /** @type {BandMarker[]} */
+  let markers = [];
+  const markerListeners = new Set();
+  const selectListeners = new Set();
+  let selectedKey = null;
+  let bandState = "idle";
+
+  function publishMarkers(next) {
+    markers = next;
+    for (const fn of markerListeners) {
+      try {
+        fn(markers);
+      } catch (err) {
+        console.error("[go] onMarkers listener threw", err);
+      }
+    }
+    // A stop that is no longer within range is no longer a selection.
+    if (selectedKey !== null && !markers.some((m) => m.key === selectedKey)) {
+      selectedKey = null;
+      applySelection(false);
+      emitSelect();
+    }
+  }
+
+  function markerFor(key) {
+    return markers.find((m) => m.key === key) || null;
+  }
+
+  function emitSelect() {
+    const marker = selectedKey === null ? null : markerFor(selectedKey);
+    for (const fn of selectListeners) {
+      try {
+        fn(selectedKey, marker);
+      } catch (err) {
+        console.error("[go] onSelect listener threw", err);
+      }
+    }
+  }
+
+  /** Paint the current selection onto whatever cards are in the DOM now. */
+  function applySelection(scroll) {
+    let target = null;
+    for (const card of body.querySelectorAll(".go-stop__card[data-key]")) {
+      const mine = selectedKey !== null && card.getAttribute("data-key") === selectedKey;
+      const li = card.closest(".go-stop");
+      if (mine) {
+        card.setAttribute("aria-current", "true");
+        if (li) li.setAttribute("data-selected", "true");
+        target = card;
+      } else {
+        card.removeAttribute("aria-current");
+        if (li) li.removeAttribute("data-selected");
+      }
+    }
+    if (target && scroll) scrollIntoPanel(target);
+    return target;
+  }
+
+  /* One delegated listener, so a re-render never leaks a handler. */
+  body.addEventListener("click", (ev) => {
+    const target = ev.target;
+    if (!target || typeof target.closest !== "function") return;
+    const card = target.closest(".go-stop__card[data-key]");
+    if (!card || !body.contains(card)) return;
+    const key = card.getAttribute("data-key");
+    // Tapping the open stop again clears it: the marker on the ground got
+    // louder, so the reader must be able to make it quiet again.
+    selectedKey = selectedKey === key ? null : key;
+    applySelection(false);
+    emitSelect();
+  });
 
   // ------------------------------------------------------------ data access
 
@@ -661,6 +809,7 @@ export function createGoBand(section, ctx = {}) {
   // ------------------------------------------------------------------ render
 
   function setState(s) {
+    bandState = s;
     section.setAttribute("data-state", s);
   }
 
@@ -742,6 +891,8 @@ export function createGoBand(section, ctx = {}) {
     clear();
     snapshotForShell(view);
     const frag = document.createDocumentFragment();
+    /** @type {BandMarker[]} */
+    const fresh = [];
 
     if (view.note) frag.appendChild(noteEl(view.note));
 
@@ -751,31 +902,51 @@ export function createGoBand(section, ctx = {}) {
     for (const g of view.groups) {
       const li = el("li", "go-stop");
       li.setAttribute("data-op", g.op);
+      li.setAttribute("data-key", g.key);
 
-      const head = el("div", "go-stop-head");
       const label = stopLabel(g);
-      const name = el("h3", "go-name", label.text);
+
+      /* The card is the control (UI_SPEC 2.3, 3.3). A stop always has a real
+       * point (it came out of a shard with a coordinate), so this is always a
+       * button, and tapping it lights the marker on the ground.
+       *
+       * The departures list and the alerts disclosure sit OUTSIDE it: an <ol>
+       * and a <details> inside a <button> are both invalid content and a
+       * nested-interactive trap for a screen reader. */
+      const card = el("button", "card go-stop__card");
+      card.type = "button";
+      card.setAttribute("data-key", g.key);
+      if (selectedKey === g.key) {
+        card.setAttribute("aria-current", "true");
+        li.setAttribute("data-selected", "true");
+      }
+
+      const head = el("span", "go-stop-head");
+      const name = el("span", "go-name", label.text);
       name.lang = label.lang;
       head.appendChild(name);
-
-      const op = el("span", "go-op", OPERATOR_TITLE[g.op] || g.op);
-      op.setAttribute("data-op", g.op);
-      head.appendChild(op);
 
       const dist = el("span", "go-dist", fmtDistance(g.dist));
       dist.setAttribute("data-metres", String(Math.round(g.dist)));
       head.appendChild(dist);
+      card.appendChild(head);
+
+      const tags = el("span", "go-stop-tags");
+      const op = el("span", "tag tag-accent-2 go-op", OPERATOR_TITLE[g.op] || g.op);
+      op.setAttribute("data-op", g.op);
+      tags.appendChild(op);
 
       if (g.members.length > 1) {
-        head.appendChild(
+        tags.appendChild(
           el(
             "span",
-            "go-platforms",
+            "tag tag-neutral go-platforms",
             t("go.platforms", "{n} platforms").replace("{n}", String(g.members.length))
           )
         );
       }
-      li.appendChild(head);
+      card.appendChild(tags);
+      li.appendChild(card);
 
       const dep = view.departures.get(g.key);
       li.appendChild(departuresEl(g, dep, view.nowMs));
@@ -784,20 +955,54 @@ export function createGoBand(section, ctx = {}) {
       if (al && al.length) li.appendChild(alertsEl(al));
 
       list.appendChild(li);
+
+      if (isFinite(g.lat) && isFinite(g.lon)) {
+        fresh.push({
+          band: "go",
+          key: g.key,
+          lat: g.lat,
+          lon: g.lon,
+          label: label.text,
+          lang: label.lang || "",
+          kind: "stops",
+          dist: g.dist,
+          op: g.op,
+          platforms: g.members.length,
+          sourceId: SOURCE_ID.stops,
+          vintage: g.vintage || "",
+        });
+      }
     }
     frag.appendChild(list);
 
-    for (const n of view.footNotes) frag.appendChild(noteEl(n));
+    for (const n of view.footNotes) {
+      frag.appendChild(typeof n === "string" ? noteEl(n, "go-note") : noteEl(n.text, "go-note", n.kind));
+    }
     frag.appendChild(sourceEl(view));
 
     body.appendChild(frag);
     setState(view.groups.length ? "ready" : "empty");
+    publishMarkers(fresh);
   }
 
   function departuresEl(group, dep, nowMs) {
     // Never an empty panel: every branch below writes copy that names what is
     // missing and why (PLAN section 6, CONTRACT 10.1 / 10.2).
     if (!dep || dep.kind === "none") {
+      /* Three different silences, and only one of them is a fault (UI_SPEC 2.5).
+       *   not-published  STIB-MIVB publishes no realtime on the NAP at all. The
+       *                  source answered by not existing; nothing broke.
+       *   save-data      the READER asked us not to fetch 1.58 MB. Their choice,
+       *                  honoured, and not a failure of anybody's.
+       *   error          the feed could not be reached. This one is a fault.
+       * The sentence already says which; `data-kind` lets the stylesheet and the
+       * pill dot agree with it without a fourth translated string. */
+      const kind =
+        dep && dep.reason === "not-published"
+          ? "nothing"
+          : dep && dep.reason === "save-data"
+          ? "declined"
+          : "unreachable";
       const reason =
         dep && dep.reason === "not-published"
           ? t(
@@ -812,18 +1017,21 @@ export function createGoBand(section, ctx = {}) {
               .replace("{op}", OPERATOR_TITLE[group.op] || group.op)
               .replace("{mb}", ((dep.size || 0) / 1048576).toFixed(1))
           : t("go.rt.unavailable", "Live departures unavailable. The stop itself is stored on this device.");
-      return noteEl(reason, "go-note");
+      return noteEl(reason, "go-note", kind);
     }
 
     const wrap = el("div", "go-deps-wrap");
     if (dep.stale) {
+      // The warn tone, and the ONLY thing in this band that gets it: data that
+      // is real but old. "Old" and "absent" are different claims (app.css).
       wrap.appendChild(
         noteEl(
           t("go.asof", "Live departures unavailable. Showing the last board seen, as of {when}.").replace(
             "{when}",
             fmtStamp(dep.at, cfg.uiLang)
           ),
-          "go-asof"
+          "go-asof",
+          "stale"
         )
       );
       wrap.setAttribute("data-stale", "true");
@@ -833,7 +1041,8 @@ export function createGoBand(section, ctx = {}) {
       wrap.appendChild(
         noteEl(
           t("go.nodepartures", "No departures in the next hour."),
-          "go-note"
+          "go-note",
+          "nothing"
         )
       );
       return wrap;
@@ -859,17 +1068,21 @@ export function createGoBand(section, ctx = {}) {
         li.appendChild(el("span", "go-cancelled", t("go.cancelled", "Cancelled")));
       } else if (r.delay) {
         const mins = Math.round(r.delay / 60);
+        const late = mins > 0;
+        // UI_SPEC 4.2 gives the LATE delay the accent tag; early and on-time are
+        // not a warning and take the neutral one. The sign and the number carry
+        // the fact either way, so a reader who sees no colour loses nothing.
         const d = el(
           "span",
-          "go-delay",
-          (mins > 0 ? "+" : "") + mins + " " + t("go.min", "min")
+          "tag " + (late ? "tag-accent" : "tag-neutral") + " go-delay",
+          (late ? "+" : "") + mins + " " + t("go.min", "min")
         );
-        d.setAttribute("data-delay", mins > 0 ? "late" : mins < 0 ? "early" : "ontime");
+        d.setAttribute("data-delay", late ? "late" : mins < 0 ? "early" : "ontime");
         li.appendChild(d);
       }
 
       if (r.platform) {
-        const p = el("span", "go-platform", r.platform);
+        const p = el("span", "tag tag-neutral go-platform", r.platform);
         if (r.platformChanged) p.setAttribute("data-changed", "true");
         li.appendChild(p);
       }
@@ -879,7 +1092,7 @@ export function createGoBand(section, ctx = {}) {
 
     if (dep.scheduledOnly) {
       wrap.appendChild(
-        noteEl(t("go.scheduled", "Realtime unavailable, times are scheduled."), "go-note")
+        noteEl(t("go.scheduled", "Realtime unavailable, times are scheduled."), "go-note", "stale")
       );
     }
     return wrap;
@@ -910,8 +1123,25 @@ export function createGoBand(section, ctx = {}) {
     return d;
   }
 
-  function noteEl(text, cls) {
+  /**
+   * A note, tagged with WHICH of the honest silences it is (UI_SPEC 2.5).
+   *
+   * `data-kind` is the hook, not a second sentence: the copy is unchanged and
+   * still carries the whole claim in words. Only `unreachable` is a fault, and
+   * only it takes a glyph, which is the non-colour half of that signal for a
+   * reader who cannot tell the warm tint from the quiet one (UI_SPEC 7.6).
+   *
+   *   nothing      the source answered and has nothing here
+   *   scope        out of scope for this region, by design
+   *   declined     not asked on purpose: save-data, or a spent quota budget
+   *   unreachable  could not be reached: the fault
+   *   stale        real but old; the warn tone, never used for "absent"
+   *   waiting      still in flight
+   */
+  function noteEl(text, cls, kind) {
     const p = el("p", cls || "quiet", text);
+    if (kind) p.setAttribute("data-kind", kind);
+    if (kind === "unreachable") p.insertBefore(icon("wifi-off", 14), p.firstChild);
     return p;
   }
 
@@ -1132,7 +1362,7 @@ export function createGoBand(section, ctx = {}) {
           note: null,
           footNotes: complete
             ? []
-            : [t("go.loading", "Checking the surrounding squares…")],
+            : [{ kind: "waiting", text: t("go.loading", "Checking the surrounding squares…") }],
         });
         painted = true;
       }
@@ -1163,12 +1393,15 @@ export function createGoBand(section, ctx = {}) {
     for (const op of ops) {
       const cov = RT_COVERAGE[op];
       if (cov && !cov.tripUpdate) {
-        notes.push(
-          t(
+        notes.push({
+          // Not a fault: the feed does not exist, and probing it again would
+          // still 404. Quiet tone, hollow dot.
+          kind: "nothing",
+          text: t(
             "go.rt.operator.none",
             "{op} publishes no realtime feed on the national access point, so no live times are shown for its stops."
-          ).replace("{op}", OPERATOR_TITLE[op] || op)
-        );
+          ).replace("{op}", OPERATOR_TITLE[op] || op),
+        });
       }
     }
     return notes;
@@ -1176,18 +1409,23 @@ export function createGoBand(section, ctx = {}) {
 
   function renderNoStops(fix) {
     clear();
+    // Nothing is baked here. That is the index answering, not the index
+    // failing, so it is the quiet tone and never the warn one.
     body.appendChild(
       noteEl(
         t(
           "go.nostops",
           "No stop of De Lijn, TEC, STIB-MIVB or NMBS-SNCB is recorded within about a kilometre of here. The stop index is baked from the national access point, vintage 2025-01-01."
-        )
+        ),
+        "quiet",
+        "nothing"
       )
     );
     body.appendChild(
       sourceEl({ sourceIds: [SOURCE_ID.stops], stopsVintage: "2025-01-01", liveAt: 0, irailUsed: false })
     );
     setState("empty");
+    publishMarkers([]);
   }
 
   // ---------------------------------------------------------------- public API
@@ -1262,6 +1500,74 @@ export function createGoBand(section, ctx = {}) {
       destroyed = true;
       if (debounceTimer) clearTimeout(debounceTimer);
       generation++;
+      markerListeners.clear();
+      selectListeners.clear();
+      markers = [];
+    },
+
+    /* ------------------------------------------------- the map surface ----
+     * Documented in full at the head of this file. Read-only: none of these
+     * calls fetches, and none of them can move the rate limiter. */
+
+    /** @returns {BandMarker[]} one per boarding point, ascending metres. */
+    getMarkers() {
+      return markers.slice();
+    },
+
+    /**
+     * Hear about every republish. Fires twice per fix, exactly as the panel
+     * paints twice: once from the centre shard, once from all nine
+     * (CONTRACT 7.5).
+     * @param {(markers: BandMarker[]) => void} fn
+     * @returns {() => void} unsubscribe
+     */
+    onMarkers(fn) {
+      if (typeof fn !== "function") return () => {};
+      markerListeners.add(fn);
+      if (markers.length) fn(markers);
+      return () => markerListeners.delete(fn);
+    },
+
+    /**
+     * Select a boarding point, or clear with `null`. This is what `map.js`
+     * calls when a marker is tapped.
+     *
+     * It does NOT re-emit `onSelect` unless asked, so a marker tap cannot
+     * bounce back into the map and start a loop.
+     *
+     * @param {string|null} key  the boarding key, "<operator>|<id>"
+     * @param {{scroll?: boolean, silent?: boolean}} [opts]
+     *        `scroll: true` brings the card into view in the panel (UI_SPEC 3.3)
+     * @returns {boolean} true when this band owns the key
+     */
+    select(key, opts = {}) {
+      const next = key === null || key === undefined ? null : String(key);
+      if (next !== null && !markers.some((m) => m.key === next)) return false;
+      selectedKey = next;
+      applySelection(opts.scroll === true);
+      if (opts.silent === false) emitSelect();
+      return true;
+    },
+
+    /** @returns {string|null} */
+    getSelected() {
+      return selectedKey;
+    },
+
+    /**
+     * Hear about a selection the READER made in the panel.
+     * @param {(key: string|null, marker: BandMarker|null) => void} fn
+     * @returns {() => void} unsubscribe
+     */
+    onSelect(fn) {
+      if (typeof fn !== "function") return () => {};
+      selectListeners.add(fn);
+      return () => selectListeners.delete(fn);
+    },
+
+    /** What the pill needs: a state and a number, never a sentence. */
+    getSummary() {
+      return { id: "go", state: bandState, count: markers.length, markers: markers.length };
     },
 
     // exposed for tests
@@ -1333,3 +1639,44 @@ function saveStore(storage, obj) {
 }
 
 export default createGoBand;
+
+// ===========================================================================
+// Class names (the stylesheet owns every rule; this file ships none)
+// ===========================================================================
+//
+//  go-stops            <ol aria-label="Nearest stops">, ascending metres.
+//                      Same order as getMarkers(), always.
+//  go-stop             <li>, carries data-op, data-key and, when selected,
+//                      data-selected="true"
+//  go-stop__card       the item card of UI_SPEC 2.3. Always a <button>: a stop
+//                      always has a point. aria-current="true" when selected.
+//  go-stop-head        <span>, name + distance
+//  go-name             <span>, carries lang="" (never machine-translated)
+//  go-dist             distance, carries data-metres
+//  go-stop-tags        <span>, the tag row
+//  go-op               operator; .tag .tag-accent-2, carries data-op
+//  go-platforms        "{n} platforms"; .tag .tag-neutral
+//
+//  go-deps-wrap        <div>, carries data-stale="true" when showing a stored
+//                      board rather than a live one
+//  go-deps / go-dep    the departure list; go-dep carries data-cancelled
+//  go-time, go-rel     tabular numbers
+//  go-line, go-dest
+//  go-delay            .tag .tag-accent when data-delay="late",
+//                      .tag .tag-neutral when "early" or "ontime".
+//                      Early is not a warning.
+//  go-platform         .tag .tag-neutral, carries data-changed
+//  go-cancelled        struck through; no colour needed to read it
+//
+//  go-alerts           <details>, operator service messages
+//  go-alert            carries data-effect; go-alert-head, go-alert-body
+//
+//  go-note             a note. data-kind says WHICH silence it is:
+//                        nothing      the feed does not exist (STIB-MIVB)
+//                        declined     save-data: the reader asked us not to
+//                        unreachable  could not be reached: the only fault,
+//                                     and the only one carrying a glyph
+//                        waiting      the surrounding squares are in flight
+//  go-asof             the warn tone, and the ONLY warn tone in this band:
+//                      data that is real but old. data-kind="stale".
+//  go-src              source + vintage, data-sources="<ids>" (test 8)

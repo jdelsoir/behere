@@ -1,0 +1,426 @@
+/* BeHERE map layer.
+ *
+ * OWNERSHIP: this file styles the `.map*` selectors and NOTHING else. The dock,
+ * the pills, the panel, the bands and every chrome cluster belong to
+ * app/app.css. That boundary is now exclusive in both directions: app.css used
+ * to carry a second copy of all 22 map selectors, with different colour values,
+ * which this file silently won by loading later. The duplicate is gone and
+ * app.css carries a comment at the seam saying so.
+ *
+ * What app.css still owns on this file's behalf, and what this file reads:
+ *   --ink-cell / --ink-sector / --ink-stops   the strokes, per theme
+ *   (--tile-filter and --tile-alpha are tokens.css's, read directly)
+ *   --focus-ring                              the keyboard outline
+ *   --text-marker                             the marker label size
+ * Each is read through var() with a tokens.css ramp step as the fallback, so if
+ * app.css is ever loaded without its semantic layer nothing renders unstyled.
+ *
+ * LOAD ORDER: app/tokens.css, then app/app.css, then this file.
+ *
+ * NO COLOUR IS TYPED HERE. Not one hex, not one rgba. Translucency is reached
+ * two ways, both of which keep the token as the single source of truth:
+ *   - SVG paths use `fill: var(--token)` + `fill-opacity`, which is native to
+ *     SVG and needs no alpha colour at all;
+ *   - the two HTML surfaces that must composite (the ground veil and the
+ *     attribution's own ground) use color-mix() over a token, each preceded by
+ *     a flat non-color-mix fallback, so an engine without color-mix loses a
+ *     decorative gradient and keeps a readable, opaque attribution.
+ * The previous revision froze 22 rgba() literals here that reproduced the
+ * channels of --color-accent, --color-accent-2 and --color-bg by hand. They
+ * were correct on the day they were typed and would have gone wrong the first
+ * time a ramp moved.
+ *
+ * THEME: dark is reached through `prefers-color-scheme` alone, exactly as
+ * tokens.css and app.css do it. This file used to also carry
+ * `:root[data-theme="dark"]` and `:root:not([data-theme="light"])` blocks;
+ * nothing in this app ever sets data-theme, no other sheet reads it, and there
+ * is no theme toggle, so those were dead rules that could only drift out of
+ * step with the two sheets that decide the palette.
+ *
+ * DEPENDENCIES: none. No @import, no CDN, no font service, no build step.
+ */
+
+/* ============================================ the map's own semantic inks == */
+
+.map,
+.map-attrib,
+.map-status {
+  /* UI_SPEC 1.4 / 7.3: promoted one ramp step darker than the prototype,
+     because over the washed tile fills the 600 steps fall to 2.70-2.88:1,
+     under the 3:1 SC 1.4.11 requires of a graphic that carries meaning. */
+  --map-ink-cell: var(--ink-cell, var(--color-accent-2-700));
+  --map-ink-sector: var(--ink-sector, var(--color-accent-700));
+  --map-ink-stops: var(--ink-stops, var(--color-accent-2-800));
+  --map-ink-muted: var(--ink-muted, var(--color-muted));
+  --map-ink-accent: var(--ink-accent, var(--color-accent-ink));
+
+  /* The position dot's hairline. 9.20:1 at worst over every washed tile fill,
+     which is what stops the cream casing dissolving into a pale ground. */
+  --map-dot-hairline: var(--color-accent-900);
+
+  --map-tile-alpha: var(--tile-alpha, 0.62);
+
+  /* Vector fill opacities. Numbers, not colours: the hue comes from the token
+     on the `fill` property beside them, so a ramp change reaches the map. */
+  --map-cell-fill-op: 0.08;
+  --map-sector-fill-op: 0.05;
+  --map-sector-current-fill-op: 0.20;
+  --map-accuracy-fill-op: 0.10;
+
+  /* The ground veil and the attribution ground, as percentages of --color-bg.
+     Percentages rather than colours for the same reason as above. */
+  --map-veil-mid-pct: 18%;
+  --map-veil-edge-pct: 42%;
+  --map-attrib-pct: 88%;
+}
+
+/* Warm dark. The ground token is already the deep brown; only the ink steps and
+   the opacities move, and nothing is desaturated into grey. */
+@media (prefers-color-scheme: dark) {
+  .map,
+  .map-attrib,
+  .map-status {
+    --map-ink-cell: var(--ink-cell, var(--color-accent-2-300));
+    --map-ink-sector: var(--ink-sector, var(--color-accent-300));
+    --map-ink-stops: var(--ink-stops, var(--color-accent-2-200));
+    /* On a deep ground the core already separates; the hairline is dropped. */
+    --map-dot-hairline: transparent;
+
+    --map-cell-fill-op: 0.10;
+    --map-sector-fill-op: 0.07;
+    --map-sector-current-fill-op: 0.22;
+    --map-accuracy-fill-op: 0.12;
+  }
+}
+
+/* Reduced transparency: sink the tiles, drop the veil (UI_SPEC 7.6). */
+@media (prefers-contrast: more) {
+  .map {
+    --map-tile-alpha: 0.35;
+    --map-veil-mid-pct: 0%;
+    --map-veil-edge-pct: 0%;
+  }
+}
+
+/* ============================================================ the surface == */
+
+.map {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  /* The ground the vector layers are drawn on when no tile ever arrives.
+     Airplane mode still answers "where am I", on this colour. */
+  background: var(--color-bg);
+  touch-action: none;          /* pointer events own pan and pinch */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+  contain: layout paint;
+}
+
+.map[data-dragging="true"] { cursor: grabbing; }
+
+/* The opt-in keyboard mode adds a real tab stop. It is not a trap: map.js
+   never intercepts Tab. */
+.map[tabindex]:focus-visible {
+  outline: 3px solid var(--focus-ring, var(--color-accent-ink));
+  outline-offset: -3px;
+}
+
+/* ------------------------------------------ layer 1: the OSM raster tiles */
+
+.map-tiles {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* Organic's own .washed treatment, applied to the basemap so it sits UNDER
+     the warm palette instead of fighting it. Never invert(): an inverted
+     basemap is a colour negative, not a dark map, and a different-looking
+     derivative work. */
+  filter: var(--tile-filter);
+}
+
+/* "off" means map.js was told not to request tiles at all, or Save-Data said
+   so. It has already cleared the layer, so this is belt and braces.
+ *
+ * "failed" deliberately gets NO rule. After three errors in one viewport
+ * map.js stops REQUESTING tiles but keeps the ones that already loaded on
+ * screen, and keeps the attribution visible because they are real imagery
+ * still being shown. app.css used to hide the failed state here, which deleted
+ * that imagery and left an ODbL credit over a basemap the reader could no
+ * longer see. */
+.map-tiles[data-state="off"] { display: none; }
+
+.map-tile {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 256px;                /* the tile protocol's own size, not a token */
+  height: 256px;
+  opacity: var(--map-tile-alpha);
+  /* A tile that has not arrived must not flash white over the warm ground. */
+  background: var(--color-bg);
+  border: 0;
+  -webkit-user-drag: none;
+  /* map.js removes a failed tile outright, so no broken-image glyph can be
+     painted. These two lines cover the frame before that removal lands. */
+  color: transparent;
+  font-size: 0;
+  will-change: transform;
+}
+
+/* ------------------------------------------------ layer 2: the ground veil */
+
+.map-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  /* Decorative only. Without color-mix the veil is simply absent, which is the
+     harmless direction to fail in. */
+  background: transparent;
+  /* `at 50% 42%` is not arbitrary: the dock occupies the bottom of the screen,
+     so the optical centre of the map sits above its geometric centre. */
+  background: radial-gradient(150% 120% at 50% 42%,
+      color-mix(in srgb, var(--color-bg) 0%, transparent) 0%,
+      color-mix(in srgb, var(--color-bg) var(--map-veil-mid-pct), transparent) 72%,
+      color-mix(in srgb, var(--color-bg) var(--map-veil-edge-pct), transparent) 100%);
+}
+
+/* -------------------------------------- layers 3 to 5: the vector paths -- */
+
+.map-vectors {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: visible;
+}
+
+/* Layer 3: the GRD_NEWID 1 km square. */
+.map-cell {
+  fill: var(--color-accent-2);
+  fill-opacity: var(--map-cell-fill-op);
+  stroke: var(--map-ink-cell);
+  stroke-width: 2;
+  stroke-dasharray: 9 6;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Layer 4: the statistical sectors. The one you are standing in is told apart
+   by WIDTH and FILL, never by hue step: the prototype's --color-accent-300
+   measures 1.27:1 on the cream ground, which is not a line, it is a rumour. */
+.map-sector {
+  fill: var(--color-accent);
+  fill-opacity: var(--map-sector-fill-op);
+  fill-rule: evenodd;
+  stroke: var(--map-ink-sector);
+  stroke-width: 1.25;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* map.js sets data-current="true" on the sector here.js resolved. This is the
+   attribute the engine really writes; `.map-sector--current` was the name the
+   spec used and nothing ever emitted it. */
+.map-sector[data-current="true"] {
+  fill-opacity: var(--map-sector-current-fill-op);
+  stroke-width: 3;
+}
+
+/* Layer 5: the accuracy circle, at the real reported accuracy. */
+.map-accuracy {
+  fill: var(--color-accent);
+  fill-opacity: var(--map-accuracy-fill-op);
+  stroke: var(--map-ink-sector);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ------------------------------------------------- layer 6: the markers -- */
+
+.map-markers {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.map-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px;
+  /* The idle border is NOT --color-bg: that is invisible against the pill's own
+     fill and does nothing in dark mode. --shadow-sm does the separating, and
+     the dark --shadow-sm carries a hairline for exactly this reason. */
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--color-bg);
+  color: var(--color-text);
+  box-shadow: var(--shadow-sm);
+  font-family: var(--font-body);
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: transform .15s ease;
+  z-index: 4;
+}
+
+.map-marker[data-labelled="true"] { padding: 5px 11px 5px 8px; }
+
+.map-marker__dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-pill);
+  background: var(--map-ink-stops);
+}
+
+.map-marker__label {
+  font-size: var(--text-marker, 12.5px);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.map-marker[data-labelled="false"] .map-marker__label { display: none; }
+
+/* The SELECTED marker draws over the position dot, so tapping a stop never
+   hides the stop you just tapped. Every unselected one draws under it, so the
+   dot is never lost in a crowd of pins. */
+.map-marker[data-selected="true"] {
+  z-index: 6;
+  border-color: var(--map-ink-stops);
+  box-shadow: var(--shadow-lg);
+  transform: translate(-50%, -50%) scale(1.06);
+}
+
+/* ---------------------------------------------- layer 7: the position dot */
+
+.map-position {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  pointer-events: none;
+}
+
+.map-position__pulse,
+.map-position__core {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+}
+
+.map-position__pulse { animation: bhPulse 2.4s ease-out infinite; }
+
+.map-position__core {
+  border: 3px solid var(--color-bg);
+  box-shadow: var(--shadow-md);
+  /* Without this the cream casing measures 1.01-2.32:1 against a washed tile
+     and the dot dissolves into a pale ground. accent-900 is 9.20:1 at worst;
+     in dark the token resolves to transparent and the outline disappears. */
+  outline: 1px solid var(--map-dot-hairline);
+}
+
+@keyframes bhPulse {
+  0%   { transform: scale(1);   opacity: .5 }
+  100% { transform: scale(3.2); opacity: 0 }
+}
+
+/* ------------------------------------------------------ the attribution -- */
+
+/* A LICENCE TERM, NOT A DESIGN CHOICE. ODbL requires it. It is rendered
+   OUTSIDE #map so the link stays focusable and announced even though the map
+   region itself is aria-hidden, and it is never inside a collapsed
+   disclosure. */
+.map-attrib {
+  position: absolute;
+  right: var(--space-2);
+  bottom: calc(var(--dock-height, 0px) + var(--space-2));
+  z-index: 15;
+  margin: 0;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  /* Opaque fallback first: unreadable attribution is the one failure mode this
+     element may not have. */
+  background: var(--color-bg);
+  background: color-mix(in srgb, var(--color-bg) var(--map-attrib-pct), transparent);
+  font-family: var(--font-body);
+  font-size: var(--text-src, 11.5px);
+  line-height: 1.4;
+  color: var(--map-ink-muted);
+  pointer-events: auto;
+  /* Rides the panel as it opens, so it never lands under the dock mid-tween. */
+  transition: bottom var(--motion-panel) var(--ease-panel);
+}
+
+.map-attrib a {
+  color: var(--map-ink-accent);
+  text-decoration: underline;
+}
+
+/* -------------------------------------------------- the status region ---- */
+
+/* One polite announcement of the map's state after a change. Visually hidden
+   without display:none, so screen readers still reach it. Self-contained: it
+   does not depend on app.css's .visually-hidden or on any .sr-only utility. */
+.map-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ------------------------------------------------------------ responsive -- */
+
+/* Wider than a phone, the dock stops spanning the screen and the attribution
+   moves in to match the chrome's own inset. This lived in app.css, where this
+   file's base rule silently overrode it. */
+@media (min-width: 700px) {
+  .map-attrib { right: var(--space-4); }
+}
+
+/* ------------------------------------------------- accessibility overrides */
+
+/* These four rules also lived in app.css, where this file's base rules beat
+   them on load order and two of them were lost outright: the marker's contrast
+   border and its forced-colors border both resolved back to
+   `2px solid transparent`. They belong to whoever owns .map-marker. */
+@media (prefers-contrast: more) {
+  .map-attrib,
+  .map-marker {
+    background: var(--color-bg);
+    border: 1px solid var(--map-ink-muted);
+  }
+}
+
+@media (forced-colors: active) {
+  /* The system supplies the colours; this only keeps the geometry legible when
+     every fill is flattened to the system palette. A washed raster basemap
+     cannot survive that flattening, so it goes and the vectors answer. */
+  .map-marker { border: 1px solid CanvasText; }
+  .map-tiles { display: none; }
+}
+
+/* ------------------------------------------------------- reduced motion -- */
+
+@media (prefers-reduced-motion: reduce) {
+  .map-position__pulse { animation: none; opacity: .35 }
+  .map-marker { transition: none }
+  .map-attrib { transition: none }
+}

@@ -76,6 +76,52 @@
  * @module now
  */
 
+import { icon } from "./icons.js";
+
+// ---------------------------------------------------------------------------
+// THE MAP-MARKER CONTRACT (identical in around.js, go.js and now.js)
+// ---------------------------------------------------------------------------
+//
+// A market and an event happen SOMEWHERE, and the revamp draws a map
+// (docs/UI_SPEC.md section 1). So this band publishes the points it already
+// resolved and `web/app/map.js` draws them. Nothing here is triggered by a pan
+// or a zoom; asking for the markers again costs nothing, because they are the
+// by-product of a render that already happened.
+//
+//   getMarkers()            -> BandMarker[]   the dated and timed rows that
+//                                             carry a coordinate
+//   onMarkers(fn)           -> unsubscribe()  fires after every render pass
+//   select(key, opts)       -> boolean        true when this band owns the key
+//   getSelected()           -> string | null
+//   onSelect(fn)            -> unsubscribe()  fires when the READER picks a row
+//   getSummary()            -> {id, state, count, markers}
+//
+// UI_SPEC 3.3 gives NOW no layer chip of its own, so nothing here is drawn
+// until the shell asks for it. That is deliberate and it is the shell's choice
+// to make, not this band's: a waste-collection date has no point at all, and a
+// market that is closed until Saturday is a weaker claim about the ground than
+// a stop you can walk to now.
+//
+// WHAT NEVER BECOMES A MARKER: waste collection. The Ghent calendar is keyed on
+// a street and a house-number band, not a coordinate, and inventing a point for
+// it would be the same lie as inventing a distance.
+//
+/**
+ * @typedef {Object} BandMarker
+ * @property {"now"} band
+ * @property {string} key      Stable across refetches: kind, name and rounded
+ *                             position, never a row index.
+ * @property {number} lat
+ * @property {number} lon
+ * @property {string} label    The record's own words. Never translated.
+ * @property {string} lang     BCP-47 tag, "" when the source does not say.
+ * @property {"market"|"event"} kind
+ * @property {number} dist     Metres from the device, or NaN when no fix.
+ * @property {string} [state]  markets: "open" | "closed" | "unknown".
+ * @property {string} [when]   events: the ISO day it starts.
+ * @property {string} sourceId Joins meta.json.sources[].id.
+ */
+
 // ---------------------------------------------------------------- constants
 
 const ODS_HOSTS = {
@@ -585,6 +631,97 @@ function fmtHM(mins) {
 }
 
 /**
+ * Bring a card into view INSIDE the scrolling panel body, and nowhere else.
+ * `block: "nearest"` is load-bearing: the revamped shell does not scroll the
+ * page, and "center" would ask every scrollable ancestor to move, the map's own
+ * container included. Smooth is dropped under `prefers-reduced-motion`.
+ */
+function scrollIntoPanel(node) {
+  if (!node || typeof node.scrollIntoView !== "function") return;
+  let smooth = false;
+  try {
+    smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    smooth = false;
+  }
+  try {
+    node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: smooth ? "smooth" : "auto" });
+  } catch {
+    node.scrollIntoView(false);
+  }
+}
+
+/** Belgium's bounding box, used only to disambiguate a bare coordinate PAIR. */
+const BE_LAT = [49.0, 52.0];
+const BE_LON = [2.0, 7.0];
+
+function inRange(v, r) {
+  return Number.isFinite(v) && v >= r[0] && v <= r[1];
+}
+
+/**
+ * The point a source published, in whatever shape it published it.
+ *
+ * Opendatasoft Explore v2.1 returns `{lon, lat}` for a `geo_point_2d`, GeoJSON
+ * geometry returns `{type, coordinates: [lon, lat]}`, and some older exports
+ * carry a bare `[lat, lon]` array or a `"lat,lon"` string.
+ *
+ * A bare PAIR is genuinely ambiguous, so it is resolved by geography rather
+ * than by hope: Belgium's latitude band (49..52) and longitude band (2..7) do
+ * not overlap, so exactly one reading of the pair can be inside the country.
+ * If neither is, the pair is DROPPED rather than guessed. A market placed in
+ * the wrong hemisphere is the class of quiet wrongness this app refuses.
+ *
+ * @returns {{lat:number, lon:number}|null}
+ */
+function pointOf(v) {
+  if (!v) return null;
+  if (typeof v === "string") {
+    const parts = v.split(",").map((s) => Number(s.trim()));
+    return parts.length === 2 ? pairOf(parts[0], parts[1]) : null;
+  }
+  if (Array.isArray(v)) {
+    if (v.length !== 2) return null;
+    return pairOf(Number(v[0]), Number(v[1]));
+  }
+  if (typeof v === "object") {
+    const lat = Number(v.lat !== undefined ? v.lat : v.latitude);
+    const lon = Number(v.lon !== undefined ? v.lon : v.lng !== undefined ? v.lng : v.longitude);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) return clean(lat, lon);
+    if (v.type === "Point" && Array.isArray(v.coordinates) && v.coordinates.length >= 2) {
+      return clean(Number(v.coordinates[1]), Number(v.coordinates[0])); // GeoJSON is lon,lat
+    }
+    if (v.geometry) return pointOf(v.geometry);
+  }
+  return null;
+}
+
+function pairOf(a, b) {
+  if (inRange(a, BE_LAT) && inRange(b, BE_LON)) return { lat: a, lon: b };
+  if (inRange(b, BE_LAT) && inRange(a, BE_LON)) return { lat: b, lon: a };
+  return null;
+}
+
+function clean(lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat, lon };
+}
+
+const R_EARTH_M = 6371008.8; // IUGG mean radius, the same constant as around.js
+const DEG = Math.PI / 180;
+
+/** Real haversine metres. Only ever used to order what is already on screen. */
+function haversineM(lat1, lon1, lat2, lon2) {
+  const dLat = (lat2 - lat1) * DEG;
+  const dLon = (lon2 - lon1) * DEG;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * DEG) * Math.cos(lat2 * DEG) * Math.sin(dLon / 2) ** 2;
+  return 2 * R_EARTH_M * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
  * Create the Now band.
  *
  * Same contract as the Go band: owns `[data-role="body"]`, sets
@@ -616,12 +753,96 @@ export function createNowBand(section, ctx = {}) {
 
   const store = loadStore(cfg.storage);
 
+  /* ------------------------------------------------ the map surface -------
+   * See the contract at the head of this file. Nothing below fetches, and
+   * nothing below is driven by the map. */
+
+  /** @type {BandMarker[]} */
+  let markers = [];
+  const markerListeners = new Set();
+  const selectListeners = new Set();
+  let selectedKey = null;
+  let bandState = "idle";
+  /** How many calendars are in scope here, and how many rows they yielded. */
+  let calendarCount = 0;
+  let rowCount = 0;
+
   function setState(s) {
+    bandState = s;
     section.setAttribute("data-state", s);
   }
   function clear() {
     while (body.firstChild) body.removeChild(body.firstChild);
   }
+
+  function publishMarkers(next) {
+    // Ascending distance where a fix exists, so the map and the panel agree
+    // about which of two markets is nearer. Rows with no fix keep their
+    // chronological order, because "when" is the only ordering that is true
+    // before there is a "where".
+    markers = next.every((m) => Number.isFinite(m.dist))
+      ? next.slice().sort((a, b) => a.dist - b.dist || String(a.key).localeCompare(String(b.key)))
+      : next;
+    for (const fn of markerListeners) {
+      try {
+        fn(markers);
+      } catch (err) {
+        console.error("[now] onMarkers listener threw", err);
+      }
+    }
+    if (selectedKey !== null && !markers.some((m) => m.key === selectedKey)) {
+      selectedKey = null;
+      applySelection(false);
+      emitSelect();
+    }
+  }
+
+  function markerFor(key) {
+    return markers.find((m) => m.key === key) || null;
+  }
+
+  function emitSelect() {
+    const marker = selectedKey === null ? null : markerFor(selectedKey);
+    for (const fn of selectListeners) {
+      try {
+        fn(selectedKey, marker);
+      } catch (err) {
+        console.error("[now] onSelect listener threw", err);
+      }
+    }
+  }
+
+  /** Paint the current selection onto whatever cards are in the DOM now. */
+  function applySelection(scroll) {
+    let target = null;
+    for (const card of body.querySelectorAll(".now-item__card[data-key]")) {
+      const mine = selectedKey !== null && card.getAttribute("data-key") === selectedKey;
+      const li = card.closest(".now-item");
+      if (mine) {
+        card.setAttribute("aria-current", "true");
+        if (li) li.setAttribute("data-selected", "true");
+        target = card;
+      } else {
+        card.removeAttribute("aria-current");
+        if (li) li.removeAttribute("data-selected");
+      }
+    }
+    if (target && scroll) scrollIntoPanel(target);
+    return target;
+  }
+
+  /* One delegated listener, so a re-render never leaks a handler. */
+  body.addEventListener("click", (ev) => {
+    const target = ev.target;
+    if (!target || typeof target.closest !== "function") return;
+    const card = target.closest(".now-item__card[data-key]");
+    if (!card || !body.contains(card)) return;
+    const key = card.getAttribute("data-key");
+    // Tapping the open row again clears it, so the reader can quieten the map.
+    selectedKey = selectedKey === key ? null : key;
+    applySelection(false);
+    emitSelect();
+  });
 
   function nis() {
     return (cfg.municipality && cfg.municipality.nis) || "";
@@ -792,10 +1013,48 @@ export function createNowBand(section, ctx = {}) {
 
   // ---------------------------------------------------------------- render
 
+  /**
+   * Which of the honest silences a group is in (UI_SPEC 2.5).
+   *
+   *   nothing      the source answered and has nothing here
+   *   scope        out of scope for this region, by design
+   *   declined     not asked on purpose: quota budget, save-data
+   *   unreachable  could not be reached: the only one that is a FAULT
+   *   stale        real but old; the warn tone, never used for "absent"
+   *   waiting      a prerequisite is missing, or still in flight
+   *
+   * `data-kind` is a hook, never a second sentence: the copy below is unchanged
+   * and still carries the whole claim in words.
+   */
+  function silenceOf(group) {
+    if (!group.available) {
+      // "It appears once your address is known" is not an absence, it is a
+      // prerequisite. Reading it as "Ghent publishes nothing" would be false.
+      return group.reason === "no-address" ? "waiting" : "nothing";
+    }
+    if (group.reason === "rate-limit") return "declined";
+    // Stale with no timestamp means it was never successfully fetched at all:
+    // "nothing on" and "we could not ask" are different facts.
+    if (group.stale && !group.at) return "unreachable";
+    return "nothing";
+  }
+
+  function noteEl(text, cls, kind) {
+    const p = el("p", cls || "quiet", text);
+    if (kind) p.setAttribute("data-kind", kind);
+    // Only the fault carries a glyph: the non-colour half of the one signal
+    // that is genuinely a warning (UI_SPEC 7.6).
+    if (kind === "unreachable") p.insertBefore(icon("wifi-off", 14), p.firstChild);
+    return p;
+  }
+
   function render(view) {
     clear();
     const frag = document.createDocumentFragment();
+    /** @type {BandMarker[]} */
+    const fresh = [];
     let shown = 0;
+    let anyFault = false;
 
     for (const group of view.groups) {
       const sec = el("section", "now-group");
@@ -803,33 +1062,40 @@ export function createNowBand(section, ctx = {}) {
       sec.appendChild(el("h3", "now-group-head", groupTitle(group)));
 
       if (!group.available) {
-        sec.appendChild(el("p", "quiet now-note", missingCopy(group)));
+        const kind = silenceOf(group);
+        sec.setAttribute("data-silence", kind);
+        sec.appendChild(noteEl(missingCopy(group), "quiet now-note", kind));
         frag.appendChild(sec);
         continue;
       }
       if (!group.rows.length) {
-        sec.appendChild(el("p", "quiet now-note", emptyCopy(group, view.now)));
+        const kind = silenceOf(group);
+        if (kind === "unreachable") anyFault = true;
+        sec.setAttribute("data-silence", kind);
+        sec.appendChild(noteEl(emptyCopy(group, view.now), "quiet now-note", kind));
         if (group.stale) sec.appendChild(asOf(group));
         frag.appendChild(sec);
         continue;
       }
 
       const ul = el("ul", "now-items");
-      for (const row of group.rows.slice(0, 8)) {
-        ul.appendChild(itemEl(group.kind, row, view.now));
+      group.rows.slice(0, 8).forEach((row, i) => {
+        const { node, marker } = itemEl(group.kind, row, view.now, view.fix, i);
+        ul.appendChild(node);
+        if (marker) fresh.push(marker);
         shown++;
-      }
+      });
       sec.appendChild(ul);
       if (group.stale) sec.appendChild(asOf(group));
       if (group.kind === "market" && group.unparsed > 0) {
         sec.appendChild(
-          el(
-            "p",
-            "quiet now-note",
+          noteEl(
             t(
               "now.market.unparsed",
               "{n} more market records list no usable opening hours and are not shown."
-            ).replace("{n}", String(group.unparsed))
+            ).replace("{n}", String(group.unparsed)),
+            "quiet now-note",
+            "nothing"
           )
         );
       }
@@ -838,23 +1104,67 @@ export function createNowBand(section, ctx = {}) {
 
     frag.appendChild(sourceEl(view));
     body.appendChild(frag);
-    setState(shown ? "ready" : "empty");
+    calendarCount = view.groups.filter((g) => g.available).length;
+    rowCount = shown;
+    // A band with nothing to show is `empty` when the calendars answered and
+    // `error` only when at least one of them could not be reached at all.
+    // Ottignies-LLN publishes zero local datasets and must never read as broken.
+    setState(shown ? "ready" : anyFault ? "error" : "empty");
+    publishMarkers(fresh);
   }
 
-  function itemEl(kind, row, now) {
+  /**
+   * A stable key for one row: kind, the record's own words, and the position
+   * rounded to about a metre. Never a row index: the list reorders when a
+   * market opens or an event starts, and a marker whose key moved under it
+   * would jump to a different pin.
+   */
+  function rowKey(kind, name, point, i) {
+    const where = point ? "@" + point.lat.toFixed(5) + "," + point.lon.toFixed(5) : "#" + i;
+    return "now:" + kind + ":" + String(name || "").slice(0, 60) + where;
+  }
+
+  /**
+   * One row, as the item card of UI_SPEC 2.3.
+   *
+   * The card is a real `button` when the row has a point of its own, because
+   * that is what makes selection bidirectional (UI_SPEC 3.3). A waste
+   * collection has no point (the calendar is keyed on a street and a
+   * house-number band), so its card is a plain `div`: a control that cannot do
+   * anything is worse than no control, and it would still take a tab stop.
+   *
+   * An outbound link is always a SEPARATE control in the tag row. An `<a>`
+   * inside a `<button>` is invalid HTML and a nested-interactive trap.
+   *
+   * @returns {{node: HTMLElement, marker: BandMarker|null}}
+   */
+  function itemEl(kind, row, now, fix, i) {
     const li = el("li", "now-item");
     li.setAttribute("data-kind", kind);
 
+    const point = kind === "collection" ? null : pointOf(row.geo);
+    const name = kind === "market" ? row.name : row.title;
+    const key = rowKey(kind, name, point, i || 0);
+    li.setAttribute("data-key", key);
+
+    const card = el(point ? "button" : "div", "card now-item__card");
+    if (point) {
+      card.type = "button";
+      card.setAttribute("data-key", key);
+      if (selectedKey === key) {
+        card.setAttribute("aria-current", "true");
+        li.setAttribute("data-selected", "true");
+      }
+    }
+    const tags = el("p", "now-item__tags");
+
     if (kind === "market") {
       li.setAttribute("data-open", row.state.state);
-      li.appendChild(el("span", "now-what", row.name));
+      card.appendChild(el("span", "now-what", row.name));
       if (row.todayRule) {
-        const w = el(
-          "span",
-          "now-when",
-          fmtHM(row.todayRule.from) + "–" + fmtHM(row.todayRule.to)
+        card.appendChild(
+          el("span", "now-when", fmtHM(row.todayRule.from) + "–" + fmtHM(row.todayRule.to))
         );
-        li.appendChild(w);
       }
       const badge =
         row.state.state === "open"
@@ -862,20 +1172,46 @@ export function createNowBand(section, ctx = {}) {
           : row.state.state === "unknown"
           ? t("now.hours.unknown", "Opening hours not published")
           : t("now.today", "Today");
-      const b = el("span", "now-open", badge);
+      // UI_SPEC 4.2: open is the live tag, closed and unknown are neutral.
+      // `unknown` is NOT a warning: a source that publishes its hours as prose
+      // has not failed, and the band simply refuses to guess a state from it.
+      // The attribute the stylesheet keys on is `data-open`, on this element.
+      const b = el(
+        "span",
+        "tag " + (row.state.state === "open" ? "tag-accent-2" : "tag-neutral") + " now-open",
+        badge
+      );
+      b.setAttribute("data-open", row.state.state);
       b.setAttribute("data-state", row.state.state);
-      li.appendChild(b);
+      tags.appendChild(b);
       if (row.parsed.approximate) {
-        const a = el("span", "now-approx", t("now.approx", "hours vary by season"));
+        const a = el("span", "tag tag-neutral now-approx", t("now.approx", "hours vary by season"));
         a.title = row.raw;
-        li.appendChild(a);
+        tags.appendChild(a);
       }
+      li.appendChild(card);
+      li.appendChild(tags);
       if (!row.parsed.known && row.raw) {
         // Never claim a state we could not derive: show the source text.
-        const rawEl = el("span", "now-raw", row.raw);
-        li.appendChild(rawEl);
+        li.appendChild(el("span", "now-raw", row.raw));
       }
-      return li;
+      return {
+        node: li,
+        marker: point
+          ? {
+              band: "now",
+              key,
+              lat: point.lat,
+              lon: point.lon,
+              label: row.name || "",
+              lang: "",
+              kind: "market",
+              dist: distFrom(fix, point),
+              state: row.state.state,
+              sourceId: SOURCE_ID.ods,
+            }
+          : null,
+      };
     }
 
     if (kind === "collection") {
@@ -891,11 +1227,13 @@ export function createNowBand(section, ctx = {}) {
               day: "numeric",
               month: "short",
             });
-      li.appendChild(el("span", "now-when", when));
-      const what = el("span", "now-what");
-      for (const f of row.what) what.appendChild(el("span", "now-frac", f));
-      li.appendChild(what);
-      return li;
+      card.appendChild(el("span", "now-when", when));
+      // The fractions ARE the "what" here, and each one is its own claim
+      // ("PMD", "RESTAFVAL"), so they read as tags rather than as one string.
+      for (const f of row.what) tags.appendChild(el("span", "tag tag-neutral now-frac", f));
+      li.appendChild(card);
+      if (tags.childNodes.length) li.appendChild(tags);
+      return { node: li, marker: null };
     }
 
     // events
@@ -908,17 +1246,45 @@ export function createNowBand(section, ctx = {}) {
             month: "short",
           });
     li.setAttribute("data-weekend", row.onWknd ? "true" : "false");
-    li.appendChild(el("span", "now-when", when));
+    card.appendChild(el("span", "now-when", when));
+    card.appendChild(el("span", "now-what", row.title));
+    if (row.venue) card.appendChild(el("span", "now-where", row.venue));
+    li.appendChild(card);
     if (row.url) {
-      const a = el("a", "now-what", row.title);
+      const a = el("a", "tag tag-outline now-item__link");
       a.href = row.url;
       a.rel = "noopener noreferrer";
-      li.appendChild(a);
-    } else {
-      li.appendChild(el("span", "now-what", row.title));
+      a.target = "_blank";
+      // The event's own title IS the link text for a screen reader. No new UI
+      // string, and no translation of a title the organiser wrote.
+      a.setAttribute("aria-label", row.title || "");
+      a.appendChild(icon("chevron-right", 14));
+      tags.appendChild(a);
     }
-    if (row.venue) li.appendChild(el("span", "now-where", row.venue));
-    return li;
+    if (tags.childNodes.length) li.appendChild(tags);
+    return {
+      node: li,
+      marker: point
+        ? {
+            band: "now",
+            key,
+            lat: point.lat,
+            lon: point.lon,
+            label: row.title || "",
+            lang: "",
+            kind: "event",
+            dist: distFrom(fix, point),
+            when: isoDay(row.start),
+            sourceId: SOURCE_ID.ods,
+          }
+        : null,
+    };
+  }
+
+  /** Metres from the device to a point, or NaN when there is no fix yet. */
+  function distFrom(fix, point) {
+    if (!fix || !isFinite(fix.lat) || !isFinite(fix.lon)) return NaN;
+    return haversineM(fix.lat, fix.lon, point.lat, point.lon);
   }
 
   function groupTitle(g) {
@@ -988,8 +1354,13 @@ export function createNowBand(section, ctx = {}) {
     }[g.kind];
   }
 
+  /**
+   * The warn tone, and the only thing in this band that gets it: data that is
+   * real but old. "Old" and "absent" are different claims, and blurring them is
+   * the one colour mistake app.css forbids outright.
+   */
   function asOf(g) {
-    return el(
+    const p = el(
       "p",
       "now-asof",
       t("now.asof", "Shown from what was stored, as of {when}.").replace(
@@ -997,6 +1368,8 @@ export function createNowBand(section, ctx = {}) {
         g.at ? fmtStamp(g.at, cfg.uiLang) : t("now.asof.unknown", "an earlier visit")
       )
     );
+    p.setAttribute("data-kind", "stale");
+    return p;
   }
 
   function municipalityName() {
@@ -1053,7 +1426,7 @@ export function createNowBand(section, ctx = {}) {
 
     const liveAt = Math.max(0, ...groups.map((g) => g.at || 0));
     persist(groups);
-    render({ groups, now, liveAt });
+    render({ groups, now, liveAt, fix });
   }
 
   function persist(groups) {
@@ -1123,9 +1496,83 @@ export function createNowBand(section, ctx = {}) {
       destroyed = true;
       if (debounceTimer) clearTimeout(debounceTimer);
       generation++;
+      markerListeners.clear();
+      selectListeners.clear();
+      markers = [];
     },
 
-    _internals: { parseOpeningHours, openState, weekendRange, houseInRange, ods },
+    /* ------------------------------------------------- the map surface ----
+     * Documented in full at the head of this file. Read-only: none of these
+     * calls fetches, and none of them can spend an Opendatasoft request. */
+
+    /** @returns {BandMarker[]} markets and events that carry a coordinate. */
+    getMarkers() {
+      return markers.slice();
+    },
+
+    /**
+     * @param {(markers: BandMarker[]) => void} fn
+     * @returns {() => void} unsubscribe
+     */
+    onMarkers(fn) {
+      if (typeof fn !== "function") return () => {};
+      markerListeners.add(fn);
+      if (markers.length) fn(markers);
+      return () => markerListeners.delete(fn);
+    },
+
+    /**
+     * Select a row, or clear with `null`. This is what `map.js` calls when a
+     * marker is tapped. It does not re-emit `onSelect` unless asked, so a
+     * marker tap cannot bounce back into the map and start a loop.
+     *
+     * @param {string|null} key
+     * @param {{scroll?: boolean, silent?: boolean}} [opts]
+     * @returns {boolean} true when this band owns the key
+     */
+    select(key, opts = {}) {
+      const next = key === null || key === undefined ? null : String(key);
+      if (next !== null && !markers.some((m) => m.key === next)) return false;
+      selectedKey = next;
+      applySelection(opts.scroll === true);
+      if (opts.silent === false) emitSelect();
+      return true;
+    },
+
+    /** @returns {string|null} */
+    getSelected() {
+      return selectedKey;
+    },
+
+    /**
+     * @param {(key: string|null, marker: BandMarker|null) => void} fn
+     * @returns {() => void} unsubscribe
+     */
+    onSelect(fn) {
+      if (typeof fn !== "function") return () => {};
+      selectListeners.add(fn);
+      return () => selectListeners.delete(fn);
+    },
+
+    /**
+     * What the pill needs: a state and a number, never a sentence.
+     *
+     * `count` is CALENDARS, not rows, because that is what the pill prints
+     * ("{n} calendars", UI_SPEC 2.2). A municipality with three calendars and
+     * nothing on today has three calendars, and saying zero would be a claim
+     * about publishing rather than about today.
+     */
+    getSummary() {
+      return {
+        id: "now",
+        state: bandState,
+        count: calendarCount,
+        rows: rowCount,
+        markers: markers.length,
+      };
+    },
+
+    _internals: { parseOpeningHours, openState, weekendRange, houseInRange, ods, pointOf },
   };
 }
 
@@ -1193,3 +1640,48 @@ function saveStore(storage, obj) {
 }
 
 export default createNowBand;
+
+// ===========================================================================
+// Class names (the stylesheet owns every rule; this file ships none)
+// ===========================================================================
+//
+//  now-group           <section> per kind, carries data-kind="market|
+//                      collection|event" and, when it has nothing to say,
+//                      data-silence (see below)
+//  now-group-head      <h3>
+//  now-items           <ul>
+//  now-item            <li>, carries data-kind, data-key and, when selected,
+//                      data-selected="true". Markets add data-open, collections
+//                      data-days, events data-weekend.
+//  now-item__card      the item card of UI_SPEC 2.3. A <button> when the row
+//                      has a point of its own (markets, events), a <div> for a
+//                      waste collection, which is keyed on a street and a
+//                      house-number band and has no coordinate at all.
+//                      aria-current="true" when selected.
+//  now-when            tabular; the time span, the weekday, or "Today"
+//  now-what            the name or title
+//  now-where           the venue
+//  now-item__tags      <p>, the tag row
+//  now-open            .tag .tag-accent-2 when data-open="open",
+//                      .tag .tag-neutral when "closed" or "unknown".
+//                      `unknown` is NOT a warning: a source that publishes its
+//                      hours as prose has not failed, and this band refuses to
+//                      guess a state from it. data-open is the attribute the
+//                      stylesheet keys on; data-state repeats it for callers
+//                      that already read the old name.
+//  now-approx          "hours vary by season"; .tag .tag-neutral, title=raw
+//  now-frac            one waste fraction; .tag .tag-neutral
+//  now-raw             the source's own words, verbatim, when no state could be
+//                      derived. Never translated, never reformatted.
+//  now-item__link      outbound <a>; .tag .tag-outline, chevron glyph,
+//                      aria-label is the event's own title
+//
+//  now-note            a note. data-kind says WHICH silence it is:
+//                        nothing      the calendar answered and has nothing
+//                        declined     the portal's daily budget is spent
+//                        unreachable  could not be reached: the only fault,
+//                                     and the only one carrying a glyph
+//                        waiting      the address is not known yet
+//  now-asof            the warn tone, and the ONLY warn tone in this band:
+//                      data that is real but old. data-kind="stale".
+//  now-src             source + vintage, data-sources and data-budget (test 8)

@@ -9,15 +9,20 @@
  *   - the UI language: municipality default, user override, persistence
  *   - mounting here / around / go / now / zoom into their band bodies
  *   - the source and vintage line under every band (acceptance test 8)
+ *   - booting map.js, wiring the dock, and pushing position, geometry, markers
+ *     and selection between them and the bands
  *
  * WHAT IT DELIBERATELY DOES NOT OWN
  *   - shard decoding, distance, fetch caching, position debounce .... geo.js
  *   - the label resolver and the language policy .................... i18n.js
  *   - the content of any band ................................ <band>.js
+ *   - projection, tiles, vector layers, markers, the dot ............. map.js
  *
  * Everything below is orchestration over geo.js. There is no second decoder and
  * no second resolver in this file: two implementations of one contract is how a
- * bake and a runtime drift apart.
+ * bake and a runtime drift apart. The same rule now covers geometry: the map
+ * never re-derives which sector you are in, it is TOLD, by here.js, which is
+ * the one sector authority in this app (UI_SPEC 1.4).
  *
  * ---------------------------------------------------------------------------
  * THE ONE WATCHER
@@ -62,6 +67,12 @@
  * setLanguage, setMunicipality, setAddress, fail and destroy. Each is called
  * only when present. A missing module collapses its own band with copy naming
  * what is absent, and never touches the other four.
+ *
+ * Since the revamp the controller may ALSO implement the map-marker contract
+ * the three point bands share (`getMarkers`, `onMarkers`, `select`,
+ * `getSelected`, `onSelect`, `getSummary`). Every one of those is optional and
+ * probed before it is called, so a band that has not adopted it yet still
+ * mounts, still paints and still answers.
  */
 
 import {
@@ -73,6 +84,7 @@ import {
 } from "./geo.js";
 
 import { createI18n, resolveLabel } from "./i18n.js";
+import { setIcon } from "./icons.js";
 
 /* =====================================================================
  * 0. Constants
@@ -116,8 +128,8 @@ const STORE = {
  * object carrying lat, lon, nis and uiLang together, which is exactly the shape
  * of the context this shell builds, so it and here.js share one call.
  *
- * A band not listed here (zoom.js, when it lands) falls through to the generic
- * probe in pushPosition().
+ * A band not listed here (zoom.js) falls through to the generic probe in
+ * pushPosition().
  */
 const BAND_ADAPTER = {
   here: {
@@ -128,7 +140,9 @@ const BAND_ADAPTER = {
     root: "body",
     // around.js draws its own <section><h2> so it can also be mounted alone.
     // Inside the shell that would put a second "Around" heading inside the
-    // band that already has one, so the shell asks for the body only.
+    // band that already has one, so the shell asks for the body only. Since
+    // the revamp the visible title is the panel's single <h2>, which makes
+    // this doubly right: there is exactly one heading per open band.
     mountOptions: { chrome: false },
     position: (c, ctx) => c.update(ctx),
   },
@@ -199,6 +213,27 @@ const BAND_KEY = {
 };
 
 /**
+ * Which map layer a band owns (UI_SPEC 3.3, rule 2).
+ *
+ * Opening a band switches its own layer on, HONESTLY: the chip's aria-pressed
+ * flips with it and the reader can switch it straight back off. Nothing is
+ * ever force-drawn behind a chip that says "off".
+ *
+ * Around is deliberately absent. Its markers exist (`around.getMarkers()`) but
+ * the map has one marker plane governed by one chip, and that chip is labelled
+ * "Stops". Drawing recycling points under it would make the legend lie, and
+ * UI_SPEC 3.3 says Around draws nothing until CONTRACT 7.2's baked `p` key
+ * ships and earns its own layer.
+ */
+const BAND_LAYERS = {
+  here: ["cell", "sector"],
+  around: [],
+  go: ["stops"],
+  now: [],
+  zoom: [],
+};
+
+/**
  * The nearest address, with its street NAME attached.
  *
  * A decoded shard row carries `streetId`, not a name: the names live in
@@ -259,6 +294,18 @@ function writeStore(key, value) {
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** Call a band method that may not exist, and never let it take the shell
+ *  down. Used everywhere the optional marker contract is probed. */
+function ask(controller, method, ...args) {
+  if (!controller || typeof controller[method] !== "function") return undefined;
+  try {
+    return controller[method](...args);
+  } catch (err) {
+    console.error("BeHERE: " + method + "() failed", err);
+    return undefined;
+  }
+}
+
 /** One grid shard, undecoded.
  *
  *  go.js and around.js read the raw wire format; here.js reads geo.js's decoded
@@ -295,6 +342,15 @@ const app = {
   bands: new Map(),      // id -> {section, host, controller}
   watcher: null,
   fixToken: 0,           // guards against an out-of-order stale read
+
+  // --- the revamp -----------------------------------------------------------
+  map: null,             // the map.js handle, or null when it did not load
+  toMarkers: null,       // map.js's stopsToMarkers, the no-band-contract path
+  here: null,            // the last HereMapState here.js published
+  markers: [],           // the last marker set, replayed when the map arrives
+  openBand: null,        // which band the dock has expanded, or null
+  selected: null,        // the selected marker key, one for the whole app
+  pushDock: null,        // re-measure .dock and hand the height to the map
 };
 
 /* =====================================================================
@@ -324,6 +380,29 @@ function bandT(key) {
   return app.i18n.tBand(key);
 }
 
+/**
+ * The Lucide glyphs, drawn once per element from app/icons.js.
+ *
+ * The markup carries `data-icon="map-pin" data-icon-size="14"` and this fills
+ * it in. icons.js builds the svg with createElementNS and parses the path data
+ * with DOMParser, so there is no innerHTML anywhere on this path, which is the
+ * rule around.js states for the whole app.
+ */
+function paintIcons(root = document) {
+  for (const el of $$("[data-icon]", root)) {
+    const name = el.dataset.icon;
+    if (!name || el.dataset.iconDrawn === name) continue;
+    try {
+      setIcon(el, name, Number(el.dataset.iconSize) || 16);
+      el.dataset.iconDrawn = name;
+    } catch (err) {
+      // A missing glyph is a missing decoration, never a missing control:
+      // every icon in this shell sits beside a text label or an aria-label.
+      console.warn("BeHERE: icon " + name + " unavailable", err);
+    }
+  }
+}
+
 function paintChrome() {
   for (const el of $$("[data-i18n]")) {
     el.textContent = chromeText(el.dataset.i18n, el.textContent);
@@ -332,20 +411,68 @@ function paintChrome() {
   const source = app.i18n ? app.i18n.langSource : "browser";
   document.documentElement.lang = lang;
 
-  // "auto" is pressed while the language still follows the ground. Pressing
+  // "auto" is checked while the language still follows the ground. Choosing
   // nl/fr/en is an explicit override that persists across a cold start;
-  // pressing auto hands the choice back to the municipality (test 5).
-  for (const b of $$(".langs button")) {
-    const v = b.dataset.lang;
-    b.setAttribute("aria-pressed", String(
-      v === "auto" ? source !== "user" : (source === "user" && v === lang)
-    ));
-    if (v === "auto") {
-      b.title = source === "user"
-        ? "Follow the language of the municipality you are standing in"
-        : "Following the municipality (" + lang + ")";
-    }
+  // choosing auto hands the choice back to the municipality (test 5).
+  //
+  // This is a radio group, so the state is `checked`. The old markup used
+  // aria-pressed on four buttons, which is the toggle-button semantic and the
+  // wrong one for a single-select: it told a screen reader that all four could
+  // be on at once.
+  for (const input of $$(".langs input[name=lang]")) {
+    const v = input.value;
+    input.checked = v === "auto" ? source !== "user" : (source === "user" && v === lang);
+    // The visible text is the language TAG. The endonym is the accessible name,
+    // and these four keys already ship in all three languages.
+    const name = v === "nl" ? chromeText("lang.nl", "Nederlands")
+      : v === "fr" ? chromeText("lang.fr", "Français")
+        : v === "en" ? chromeText("lang.en", "English")
+          : chromeText("lang.auto", "Match where I am");
+    input.setAttribute("aria-label", name);
   }
+
+  paintControlLabels();
+  paintPills();
+}
+
+/**
+ * The labels that live on an attribute rather than in a text node.
+ *
+ * Every one of these keys is asked for with a literal string so
+ * scripts/check_i18n.py can see it and gate it in all three languages.
+ */
+function paintControlLabels() {
+  const menu = $("#app-menu");
+  if (menu) menu.setAttribute("aria-label", chromeText("menu.open", "BeHERE menu"));
+
+  const close = $("#panel-close");
+  if (close) close.setAttribute("aria-label", chromeText("panel.close", "Close"));
+
+  const zin = $("#zoom-in");
+  if (zin) zin.setAttribute("aria-label", chromeText("map.zoom.in", "Zoom in"));
+  const zout = $("#zoom-out");
+  if (zout) zout.setAttribute("aria-label", chromeText("map.zoom.out", "Zoom out"));
+
+  // The chip titles are the legend's own footnotes: which file each stroke was
+  // drawn from. The sector one names the municipality whose polygons are
+  // loaded, so it is filled per position rather than written into the string.
+  const nis = app.nis || (app.muntyMeta && app.muntyMeta.nis) || "";
+  const titles = {
+    cell: chromeText("map.layer.cell.title",
+      "The Statbel GRD_NEWID square, projected with grid.js"),
+    sector: chromeText("map.layer.sector.title",
+      "2025 statistical sectors, from {nis}/sector.geojson").replace("{nis}", nis || "…"),
+    stops: chromeText("map.layer.stops.title",
+      "Baked NAP GTFS stops from the loaded shard"),
+  };
+  for (const chip of $$("#layer-chips .chip")) {
+    const t = titles[chip.dataset.layer];
+    if (t) chip.title = t;
+  }
+
+  if (app.map) app.map.setStrings(mapStrings());
+  paintLocateButton();
+  paintScale();
 }
 
 async function loadChrome() {
@@ -393,6 +520,7 @@ async function loadChrome() {
  * @property {function} metres         (m) -> localised display string
  * @property {function} setSources     (bandId, ...sourceIds) writes the src line
  * @property {function} rememberDepartures  persists last-known departures
+ * @property {function} onHere         here.js's HereMapState sink (UI_SPEC 1.4)
  */
 function makeContext(bandId) {
   const shards = Array.from(app.shards.values());
@@ -425,6 +553,11 @@ function makeContext(bandId) {
       : NaN),
     setSources,
     rememberDepartures,
+
+    // here.js publishes the frozen HereMapState through this sink AND as a
+    // bubbling `behere:here` event. The shell takes the sink because it is
+    // synchronous and cannot be missed by a listener attached one tick late.
+    onHere: acceptHereState,
 
     // --- aliases the sibling bands declare under other names ---------------
     // Cheaper and more honest than renaming fields in four finished modules.
@@ -474,8 +607,8 @@ const ENTRY_NAMES = (id) => [
 ];
 
 /** Collapse a band with copy that names what is missing. Never a blank card,
- *  and never error styling: for two of the seven pilot cities "nothing is
- *  published here" is the correct answer rather than a fault. */
+ *  and never error styling: for two of the pilot cities "nothing is published
+ *  here" is the correct answer rather than a fault. */
 function collapse(host, text) {
   host.textContent = "";
   const p = document.createElement("p");
@@ -563,6 +696,8 @@ async function mountBands() {
       collapse(host, absent("It could not be drawn from the data on this device."));
       section.dataset.state = "error";
     }
+
+    if (rec.controller) bridgeBandToMap(id, rec);
   }
 }
 
@@ -619,6 +754,8 @@ function refreshBands(stateName) {
     if (stateName) rec.section.dataset.state = stateName;
     pushPosition(id, rec);
   }
+  markersFromShards();
+  paintPills();
 }
 
 /* =====================================================================
@@ -662,30 +799,41 @@ function startWatching(userAsked) {
       "Your device did not return a position.");
     return;
   }
-  if (userAsked) status.textContent = chromeText("here.locating", "Finding your position…");
+  if (userAsked) {
+    status.dataset.i18n = "here.locating";
+    status.textContent = chromeText("here.locating", "Finding your position…");
+  }
 
   // ONE watcher for the whole app. geo.watchPosition emits the first fix at
   // once, then debounces on the trailing edge and drops fixes that did not move
   // far enough to change any answer. A stationary device does no work at all.
   app.watcher = watchPosition({
     onPosition(fix) {
+      // An accuracy is a number, not a translatable sentence. Dropping the key
+      // is what stops paintChrome() overwriting "±12 m" with "Location not
+      // requested yet." the next time the reader switches language.
+      status.removeAttribute("data-i18n");
       status.textContent = "±" + Math.round(fix.accuracy || 0) + " m";
       onFix(fix).catch((err) => console.error("BeHERE: fix failed", err));
     },
     onError(err) {
-      status.textContent = err && err.kind === "denied"
+      const denied = !!(err && err.kind === "denied");
+      status.dataset.i18n = denied ? "here.denied" : "here.unavailable";
+      status.textContent = denied
         ? chromeText("here.denied",
             "Location is switched off for this page. Turn it on to answer “where am I”.")
         : chromeText("here.unavailable", "Your device did not return a position.");
       for (const rec of app.bands.values()) callBand(rec, "fail", err);
+      paintPills();
     },
   });
 
-  // Desktop testing of the seven pilot cities without flying to Belgium
-  // (PLAN phase 5). Injected through the same debounce as a real device.
+  // Desktop testing of the pilot cities without flying to Belgium (PLAN phase
+  // 5). Injected through the same debounce as a real device.
   window.behere = Object.assign(window.behere || {}, {
     at: (lat, lon, accuracy) => app.watcher.push(lat, lon, accuracy || 20),
     lang: setLanguage,
+    map: () => app.map,
   });
 }
 
@@ -699,8 +847,14 @@ async function onFix(fix) {
   const token = ++app.fixToken;
   app.position = fix;
 
+  // The dot moves on the FIRST paint, before any shard has landed. "Where am
+  // I" is answered by the device, not by the data, and making the dot wait for
+  // a 629 KB read would be a lie about which of the two is slow.
+  if (app.map) app.map.setPosition(fix);
+
   const nine = readCellsAround(fix.lat, fix.lon);
   app.cell = nine.cell;
+  if (app.map) app.map.setCell(app.cell);
   refreshBands("locating");
 
   // Paint 1: the centre cell alone answers "where am I".
@@ -769,6 +923,7 @@ function resolvePlace() {
     app.streets = null;
     if (!nis) applyMunicipalityLanguage();
   }
+  paintPlaceLabel();
 }
 
 async function loadMunicipality(token) {
@@ -785,6 +940,8 @@ async function loadMunicipality(token) {
   if (meta && meta.ok && meta.data) app.muntyMeta = meta.data;
   app.streets = streets || null;
   applyMunicipalityLanguage();
+  paintPlaceLabel();
+  paintControlLabels();
 }
 
 /* =====================================================================
@@ -810,12 +967,16 @@ function rememberDepartures(items, place) {
 /**
  * Ask the service worker how much of the baked data it actually holds.
  *
- * sw.js precaches the whole release at install (631 grid shards, the seven
+ * sw.js precaches the whole release at install (631 grid shards, the pilot
  * cities' files and the shared documents), but an install that ran offline, or
  * hit a storage quota, stores less than all of it. PLAN section 11 says a cold
  * start must work with no cache, so the app has to be able to SAY whether it
  * can. This is the only place that claim is made, and it is made from the
  * worker's own cache keys rather than from an assumption.
+ *
+ * Basemap tiles are NOT part of this number and never will be. They live in
+ * their own runtime cache and are never precached, so "stored on this device"
+ * stays a claim about baked data only.
  *
  * One message, on demand. No polling (acceptance test 9).
  *
@@ -876,7 +1037,7 @@ async function paintOfflineReadiness() {
 }
 
 /* =====================================================================
- * 9. Footer
+ * 9. The menu sheet
  * ===================================================================== */
 
 function paintFooter(meta) {
@@ -909,12 +1070,655 @@ function paintFooter(meta) {
   }
 }
 
+/** The place under the wordmark: the municipality you are standing in.
+ *
+ *  Resolved through the same four steps as every other label, so it is the
+ *  official local name unless web/data/i18n/en.json carries a curated English
+ *  one. Nothing here is machine-translated. */
+function paintPlaceLabel() {
+  const el = $("#brand-place");
+  if (!el) return;
+  const m = app.muntyMeta;
+  if (!m) { el.textContent = ""; el.hidden = true; return; }
+  // i18n.municipality() is the override-aware resolver of CONTRACT 9.1, the
+  // same one here.js uses. Nothing here is machine-translated: the four steps
+  // land on the official local name unless web/data/i18n/en.json carries a
+  // curated English one (Brussel -> City of Brussels, and nothing else).
+  let name = "";
+  if (app.i18n && typeof app.i18n.municipality === "function") {
+    try {
+      const r = app.i18n.municipality(m.nis, m);
+      name = (r && r.text) || "";
+    } catch (err) { name = ""; }
+  }
+  el.textContent = name ? name + " · " + m.nis : String(m.nis || "");
+  el.hidden = !el.textContent;
+}
+
+function wireSheet() {
+  const button = $("#app-menu");
+  const sheet = $("#app-sheet");
+  if (!button || !sheet) return;
+
+  const setOpen = (open) => {
+    sheet.hidden = !open;
+    button.setAttribute("aria-expanded", String(open));
+  };
+  setOpen(false);
+
+  button.addEventListener("click", () => {
+    setOpen(sheet.hidden);
+    if (!sheet.hidden) {
+      const first = sheet.querySelector("input, button, summary, a");
+      if (first && typeof first.focus === "function") first.focus();
+    }
+  });
+
+  // Escape closes it and puts focus back on the control that opened it. The
+  // sheet is NOT modal: nothing is trapped and the map keeps drawing.
+  sheet.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    setOpen(false);
+    button.focus();
+  });
+
+  // A click anywhere else closes it. Pointerdown rather than click so a drag
+  // that starts on the map closes the sheet before the map begins to pan.
+  document.addEventListener("pointerdown", (e) => {
+    if (sheet.hidden) return;
+    if (sheet.contains(e.target) || button.contains(e.target)) return;
+    setOpen(false);
+  });
+}
+
 /* =====================================================================
- * 10. Boot
+ * 10. The map
+ * ===================================================================== */
+
+/**
+ * Boot map.js.
+ *
+ * Dynamically imported, exactly like the five band modules, for the same
+ * reason: a map that cannot be drawn must not take the answer down with it.
+ * With no map the page is the dock over the ground colour, and every question
+ * the map answers visually is still answered as text in a band.
+ *
+ * The container is <body>. map.js reuses the #map, p.map-attrib and
+ * p.map-status that index.html already ships, and writes --dock-height onto
+ * the container, so passing the body puts that variable where the attribution
+ * and the dock can both read it.
+ */
+async function mountMap() {
+  let mod = null;
+  try {
+    mod = await import("./map.js");
+  } catch (err) {
+    console.warn("BeHERE: ./map.js unavailable, the bands answer without it", err);
+    return;
+  }
+  if (typeof mod.createMap !== "function") {
+    console.warn("BeHERE: ./map.js exports no createMap()");
+    return;
+  }
+
+  try {
+    app.map = mod.createMap(document.body, {
+      layers: readChips(),
+      // The map is a real, operable control, so it is operable from the
+      // keyboard: arrows pan, +/- zoom, Home recentres. map.js does the rest
+      // of the work this flag implies -- it drops aria-hidden from #map and
+      // makes it a labelled group with ONE tab stop, because a focusable node
+      // inside an aria-hidden subtree is an authoring error. Tab is never
+      // intercepted, so the single stop cannot become a trap, and the map
+      // still answers nothing that a band does not also answer as text.
+      keyboard: true,
+      strings: mapStrings(),
+    });
+  } catch (err) {
+    console.error("BeHERE: the map could not be mounted", err);
+    return;
+  }
+  app.toMarkers = typeof mod.stopsToMarkers === "function" ? mod.stopsToMarkers : null;
+
+  wireMapChrome();
+
+  // Anything that arrived before the map did. The bands mount before this,
+  // because a band is the answer and the map is the answer drawn.
+  if (app.position) app.map.setPosition(app.position);
+  if (app.cell) app.map.setCell(app.cell);
+  if (app.here) applyHereToMap(app.here);
+  if (app.markers.length) pushMarkers(app.markers);
+  if (app.pushDock) app.pushDock();
+  if (app.openBand) onBandOpened(app.openBand);
+}
+
+/**
+ * The two strings map.js resolves, built once so mount and re-translate can
+ * never drift apart.
+ *
+ * `label` is the accessible name of the map group AND, because the group is a
+ * tab stop that answers to keys with no visible affordance, it carries the key
+ * hint. WCAG 3.3.2: a control whose operation is not self-evident says how it
+ * is operated. It is one string rather than an aria-describedby target because
+ * a description on a group is announced inconsistently, and because a hidden
+ * paragraph inside the group would be read as the group's content.
+ */
+function mapStrings() {
+  const label = chromeText("map.label", "Map of where you are");
+  const hint = chromeText("map.keys",
+    "Arrow keys pan, plus and minus zoom, Home returns to where you are.");
+  return {
+    status: chromeText("map.status",
+      "Map at {m} m per 100 pixels, centred on your position."),
+    label: hint ? label + ". " + hint : label,
+  };
+}
+
+/** The chips' current pressed state, read as map.js's {cell, sector, stops}. */
+function readChips() {
+  const out = {};
+  for (const chip of $$("#layer-chips .chip")) {
+    out[chip.dataset.layer] = chip.getAttribute("aria-pressed") !== "false";
+  }
+  return out;
+}
+
+function paintChips(layers) {
+  for (const chip of $$("#layer-chips .chip")) {
+    const on = !!layers[chip.dataset.layer];
+    chip.setAttribute("aria-pressed", String(on));
+  }
+}
+
+/** The scale readout: metres of ground per 100 screen pixels. */
+function paintScale(mpp) {
+  const el = $("#map-scale");
+  if (!el) return;
+  const value = typeof mpp === "number"
+    ? mpp
+    : (app.map ? app.map.metresPerPixel() : NaN);
+  if (!isFinite(value)) { el.textContent = ""; el.removeAttribute("aria-label"); return; }
+  const m = Math.round(value * 100);
+  el.textContent = m + " m";
+  el.setAttribute("aria-label",
+    chromeText("map.scale", "{m} m per 100 pixels").replace("{m}", String(m)));
+}
+
+/**
+ * The locate button has two jobs and says which one it is doing.
+ *
+ * Before a fix it asks for one. After a fix, once the reader has panned away,
+ * it offers to come back. When there is a fix and the map is already centred
+ * on it, the button has nothing to do and is hidden rather than left there
+ * pretending.
+ */
+function paintLocateButton(offCentre) {
+  const button = $("#locate");
+  if (!button) return;
+  const label = button.querySelector(".btn__label") || button;
+  const away = offCentre === undefined
+    ? (app.map ? app.map.isOffCentre() : false)
+    : !!offCentre;
+
+  if (!app.position) {
+    label.dataset.i18n = "locate.action";
+    label.textContent = chromeText("locate.action", "Find where I am");
+    button.hidden = false;
+    return;
+  }
+  label.dataset.i18n = "map.recentre";
+  label.textContent = chromeText("map.recentre", "Back to where I am");
+  // With no map there is nothing to recentre, so the button keeps its first
+  // job rather than offering a second one it cannot do.
+  button.hidden = !!app.map && !away;
+}
+
+function paintTileNote(state) {
+  const el = $("#tile-note");
+  if (!el) return;
+  const live = state === "live";
+  el.dataset.state = state || "off";
+  el.dataset.i18n = live ? "map.tiles.live" : "map.tiles.none";
+  el.textContent = live
+    ? chromeText("map.tiles.live", "Tiles: openstreetmap.org · live")
+    : chromeText("map.tiles.none",
+        "No tiles. Everything drawn is baked on this device.");
+}
+
+function wireMapChrome() {
+  const map = app.map;
+  if (!map) return;
+
+  map.on("move", (e) => {
+    paintScale(e.metresPerPixel);
+    paintLocateButton(e.offCentre);
+  });
+  map.on("zoom", (e) => {
+    const out = $("#zoom-out");
+    const zin = $("#zoom-in");
+    if (out) out.disabled = e.zoom <= e.min;
+    if (zin) zin.disabled = e.zoom >= e.max;
+  });
+  map.on("tiles", (e) => paintTileNote(e.state));
+  map.on("layers", (e) => paintChips(e));
+  map.on("select", (e) => {
+    if (e.source === "api") return;      // we asked for it; do not echo it back
+    selectKey(e.key, "map");
+  });
+
+  const out = $("#zoom-out");
+  if (out) out.addEventListener("click", () => map.zoomBy(-1));
+  const zin = $("#zoom-in");
+  if (zin) zin.addEventListener("click", () => map.zoomBy(1));
+
+  for (const chip of $$("#layer-chips .chip")) {
+    chip.addEventListener("click", () => {
+      const on = chip.getAttribute("aria-pressed") !== "false";
+      map.setLayer(chip.dataset.layer, !on);
+      // map.js only emits "layers" when the value really changed, so the chip
+      // is repainted from the map's own state rather than from the click.
+      paintChips(map.getLayers());
+    });
+  }
+
+  paintChips(map.getLayers());
+  paintTileNote(map.getTileState());
+  paintScale();
+  paintLocateButton();
+}
+
+/**
+ * here.js's HereMapState, the one authority on which sector you are standing
+ * in (UI_SPEC 1.4). The map is told; it never re-derives.
+ */
+function acceptHereState(state) {
+  // The same frozen object arrives twice per publish, once through ctx.onHere
+  // and once as the bubbling `behere:here` event. Identity is the exact test:
+  // here.js already dedupes by signature before it publishes at all, so two
+  // different objects really are two different answers.
+  if (!state || state === app.here) return;
+  app.here = state;
+  applyHereToMap(state);
+  paintPills();
+}
+
+function applyHereToMap(state) {
+  if (!app.map) return;
+  app.map.setCell(state.cell || app.cell || null);
+  app.map.setSectors(state.sectors || null, state.sector || null);
+  if (state.position) app.map.setPosition(state.position);
+}
+
+/* =====================================================================
+ * 10b. Markers and selection
+ * ===================================================================== */
+
+/**
+ * Wire one band's optional map-marker contract.
+ *
+ * Only Go feeds the marker plane today. The `stops` chip is the plane's
+ * legend, and a legend that says "Stops" over a recycling park is a lie, so
+ * Around's markers stay in its own list until CONTRACT 7.2's baked `p` key
+ * earns them a chip of their own (UI_SPEC 3.3).
+ *
+ * Selection is bidirectional but never circular: a tap on the map calls
+ * `select(key, {silent: true})` on the band, and a tap on a card calls
+ * `map.select(key)`, whose "select" event carries `source: "api"` and is
+ * dropped by the listener above.
+ */
+function bridgeBandToMap(id, rec) {
+  const c = rec.controller;
+
+  if (typeof c.onMarkers === "function") {
+    ask(c, "onMarkers", (markers) => {
+      if (id === "go") pushMarkers(markers);
+      paintPills();
+    });
+  }
+  if (typeof c.onSelect === "function") {
+    ask(c, "onSelect", (key) => selectKey(key, id));
+  }
+}
+
+/**
+ * The Go band's boarding points become the marker plane.
+ *
+ * The map does NOT re-read a shard, re-group platforms or re-sort: go.js's
+ * `groupStops` already decided which places to stand there are and in what
+ * order, and re-deriving that in map.js would be a second opinion about the
+ * same fact. Every marker therefore has a card in the panel, in the same
+ * order, which is what makes the panel the marker's keyboard equivalent.
+ */
+function pushMarkers(markers) {
+  app.markers = Array.isArray(markers) ? markers : [];
+  if (!app.map) return;   // replayed by mountMap() when it arrives
+  app.map.setMarkers(app.markers.map((m) => ({
+    key: m.key,
+    lat: m.lat,
+    lon: m.lon,
+    label: m.label || "",
+    operator: m.op || m.operator || "",
+    kind: m.kind || "stops",
+  })));
+}
+
+/**
+ * The fallback for a build whose Go band has not adopted the marker contract.
+ *
+ * It reads the same decoded stops the band reads, through map.js's own
+ * `stopsToMarkers`, which groups platforms by `ps` exactly as `groupStops`
+ * does. It runs ONLY when the band publishes nothing, so the two can never
+ * both be drawing: there is still one authority per fact, it is just a
+ * different one when the first is absent.
+ */
+function markersFromShards() {
+  if (!app.map || !app.toMarkers) return;
+  const rec = app.bands.get("go");
+  if (rec && rec.controller && typeof rec.controller.onMarkers === "function") return;
+  try {
+    app.map.setMarkers(app.toMarkers(stopsOf(Array.from(app.shards.values()))));
+  } catch (err) {
+    console.warn("BeHERE: could not derive stop markers", err);
+  }
+}
+
+/**
+ * One selected key for the whole app.
+ *
+ * `origin` is who said so, and it is what stops the echo: the band that raised
+ * it is not told again, and the map is only told when the reader picked in a
+ * panel rather than on the ground.
+ */
+function selectKey(key, origin) {
+  const next = key === undefined || key === null ? null : String(key);
+  if (next === app.selected) return;
+  app.selected = next;
+
+  for (const [id, rec] of app.bands) {
+    if (id === origin) continue;
+    // `scroll` brings the card into view in the panel, `silent` stops the
+    // band re-announcing a selection it did not make (UI_SPEC 3.3, rule 3).
+    ask(rec.controller, "select", next, { scroll: true, silent: true });
+  }
+  if (origin !== "map" && app.map) app.map.select(next);
+
+  // Picking a stop on the ground opens the band that can name it.
+  if (origin === "map" && next && app.openBand !== "go") openBand("go");
+}
+
+/* =====================================================================
+ * 11. The dock: pills, panel, and what the map does when one opens
+ * ===================================================================== */
+
+/**
+ * The dock: expanding, collapsing, the roving tabindex and focus.
+ *
+ * This lives HERE rather than in a dock.js of its own. During the revamp the
+ * dock was planned as a sixth chrome module and this function dynamically
+ * imported "./dock.js", falling back to an inline implementation when the file
+ * was absent. The file was never written, the inline implementation is the
+ * whole behaviour, and an import of a module that does not exist is a
+ * guaranteed 404 and a console error on every cold boot -- paid on every load,
+ * forever, to reach a `catch` that runs the code directly below it.
+ *
+ * So the fallback IS the implementation and the probe is gone. The division of
+ * labour the probe existed to allow is preserved inside this file: wireDock()
+ * writes `aria-expanded`, `hidden` and `tabindex` and nothing else, and
+ * paintPills() writes `.pill__count` and `.pill__state[data-state]` and nothing
+ * else. Those two never touch the same attribute, so splitting them back out
+ * into a module later is a move, not a rewrite.
+ *
+ * watchPillState() still observes `aria-expanded` rather than listening for a
+ * click, so whoever opens a band -- this file, a future dock.js, or a test
+ * driving the DOM directly -- is reacted to identically.
+ */
+function mountDock() {
+  wireDock();
+  watchPillState();
+  watchDockHeight();
+}
+
+/** Which section belongs to which pill, straight off aria-controls. */
+function pillOf(id) { return $("#pill-" + id); }
+function sectionOf(id) { return document.getElementById("band-" + id); }
+
+function openBand(id) {
+  applyOpen(id);
+}
+
+/** The whole disclosure behaviour. See mountDock() for why it lives here. */
+function wireDock() {
+  const pills = $$("#dock-pills .pill");
+  if (!pills.length) return;
+
+  for (const pill of pills) {
+    pill.addEventListener("click", () => {
+      const id = pill.dataset.band;
+      applyOpen(app.openBand === id ? null : id);
+    });
+  }
+
+  // ONE tab stop for the row, arrow keys within it. This is the disclosure
+  // pattern rather than the tabs pattern, because "no panel at all" is a real
+  // state here and the tabs pattern has no name for it (UI_SPEC 3.6).
+  const row = $("#dock-pills");
+  row.addEventListener("keydown", (e) => {
+    const i = pills.indexOf(document.activeElement);
+    if (i < 0) return;
+    let next = -1;
+    if (e.key === "ArrowRight") next = (i + 1) % pills.length;
+    else if (e.key === "ArrowLeft") next = (i - 1 + pills.length) % pills.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = pills.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    rovePillFocus(pills[next]);
+    pills[next].focus();
+    if (typeof pills[next].scrollIntoView === "function") {
+      pills[next].scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  });
+
+  const close = $("#panel-close");
+  if (close) close.addEventListener("click", () => applyOpen(null));
+
+  const panel = $("#dock-panel");
+  if (panel) {
+    panel.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      const open = app.openBand;
+      applyOpen(null);
+      const pill = open ? pillOf(open) : null;
+      if (pill) pill.focus();
+    });
+  }
+
+  applyOpen(null);
+}
+
+function rovePillFocus(active) {
+  for (const pill of $$("#dock-pills .pill")) {
+    pill.tabIndex = pill === active ? 0 : -1;
+  }
+}
+
+function applyOpen(id) {
+  const panel = $("#dock-panel");
+  const pills = $$("#dock-pills .pill");
+  app.openBand = id || null;
+
+  for (const pill of pills) {
+    pill.setAttribute("aria-expanded", String(pill.dataset.band === app.openBand));
+  }
+  for (const band of BANDS) {
+    const section = sectionOf(band);
+    if (section) section.hidden = band !== app.openBand;
+  }
+  if (panel) panel.hidden = !app.openBand;
+
+  const kicker = $("#panel-kicker");
+  const title = $("#panel-title");
+  if (app.openBand) {
+    if (title) title.textContent = chromeText(BAND_KEY[app.openBand], BAND_TITLE[app.openBand]);
+    if (kicker) kicker.textContent = chromeText(BAND_KEY[app.openBand] + ".q", "");
+  }
+
+  rovePillFocus(app.openBand ? pillOf(app.openBand) : pills[0]);
+  if (app.openBand) {
+    const section = sectionOf(app.openBand);
+    // Focus lands on the section, not on the first control inside it, so the
+    // next Tab reaches the content instead of jumping back to the top of the
+    // page (UI_SPEC 3.6).
+    if (section && typeof section.focus === "function") section.focus();
+  }
+  onBandOpened(app.openBand);
+}
+
+/**
+ * Whoever flipped `aria-expanded` — wireDock() here, a future dock.js, or a
+ * test driving the DOM — this is what
+ * reacts to it. A MutationObserver rather than a click handler, so the two
+ * implementations need no shared convention beyond the ARIA attribute they
+ * both have to set anyway.
+ */
+function watchPillState() {
+  const pills = $$("#dock-pills .pill");
+  if (!pills.length || typeof MutationObserver !== "function") return;
+  const ob = new MutationObserver(() => {
+    const open = pills.find((p) => p.getAttribute("aria-expanded") === "true");
+    const id = open ? open.dataset.band : null;
+    if (id === app.openBand) return;
+    app.openBand = id;
+    onBandOpened(id);
+  });
+  for (const pill of pills) {
+    ob.observe(pill, { attributes: true, attributeFilter: ["aria-expanded"] });
+  }
+}
+
+/**
+ * UI_SPEC 3.3: opening a band switches its own layer on, and nothing else.
+ * No zoom change, no re-request of tiles, no move of the centre.
+ */
+function onBandOpened(id) {
+  if (!app.map || !id) return;
+  for (const name of BAND_LAYERS[id] || []) app.map.setLayer(name, true);
+  paintChips(app.map.getLayers());
+}
+
+/**
+ * --dock-height: how much of the map the dock covers.
+ *
+ * The map reads it to lift its optical centre, and the attribution reads it to
+ * sit above the dock. Without it, opening a band on a phone puts the panel
+ * over the position dot, which is the one thing a "where am I" app must never
+ * do.
+ */
+function watchDockHeight() {
+  const dock = $("#dock");
+  if (!dock) return;
+  const push = () => {
+    const h = Math.round(dock.getBoundingClientRect().height);
+    // app.css declares --dock-height on :root and reads it from .map-attrib,
+    // which sits OUTSIDE the dock, so the variable has to live on the root
+    // element rather than on .dock itself.
+    document.documentElement.style.setProperty("--dock-height", h + "px");
+    if (app.map) app.map.setDockHeight(h);
+  };
+  app.pushDock = push;
+  if (typeof ResizeObserver === "function") new ResizeObserver(push).observe(dock);
+  else window.addEventListener("resize", push);
+  push();
+}
+
+/* =====================================================================
+ * 11b. What each pill says
+ * ===================================================================== */
+
+/**
+ * The pill count is words, never a colour.
+ *
+ * `.pill__state` is a 10 px dot and it is reinforcement only: the same fact is
+ * written out beside it, so the state survives a monochrome rendering and a
+ * reader who cannot tell sage from terracotta.
+ *
+ * Three ways to have nothing to say, and only the third is a fault
+ * (UI_SPEC 2.5). All three take the hollow dot; the difference is the note the
+ * band itself writes, and it is the band that knows which one it is.
+ */
+function pillModel(id) {
+  const rec = app.bands.get(id);
+  const c = rec ? rec.controller : null;
+  const summary = ask(c, "getSummary") || null;
+  const count = summary && typeof summary.count === "number" ? summary.count : null;
+
+  if (!app.position) {
+    return { state: "idle", text: chromeText("pill.idle", "waiting for a position") };
+  }
+
+  const none = () => ({ state: "nothing", text: chromeText("pill.none", "nothing baked") });
+
+  if (id === "here") {
+    const h = app.here;
+    if (h && h.sector) return { state: "answers", text: String(h.sector) };
+    if (app.nis) {
+      return { state: "answers",
+        text: chromeText("pill.here.nis", "NIS {nis}").replace("{nis}", app.nis) };
+    }
+    return none();
+  }
+
+  if (id === "zoom") {
+    const n3 = app.muntyMeta && app.muntyMeta.nuts3;
+    if (!n3) return none();
+    return { state: "answers", text: chromeText("pill.zoom", "{nuts3}").replace("{nuts3}", n3) };
+  }
+
+  if (id === "around") {
+    if (count === null) return { state: "idle", text: "" };
+    if (!count) return none();
+    return { state: "answers",
+      text: (count === 1
+        ? chromeText("pill.around.one", "{n} dataset")
+        : chromeText("pill.around", "{n} datasets")).replace("{n}", String(count)) };
+  }
+
+  if (id === "go") {
+    if (count === null) return { state: "idle", text: "" };
+    if (!count) return none();
+    return { state: "answers",
+      text: chromeText("pill.go", "{n} stops here").replace("{n}", String(count)) };
+  }
+
+  // now
+  if (count === null) return { state: "idle", text: "" };
+  if (!count) return { state: "nothing", text: chromeText("pill.now.none", "none published") };
+  return { state: "answers",
+    text: (count === 1
+      ? chromeText("pill.now.one", "{n} calendar")
+      : chromeText("pill.now", "{n} calendars")).replace("{n}", String(count)) };
+}
+
+function paintPills() {
+  for (const id of BANDS) {
+    const pill = pillOf(id);
+    if (!pill) continue;
+    const model = pillModel(id);
+    const dot = pill.querySelector(".pill__state");
+    const count = pill.querySelector(".pill__count");
+    if (dot) dot.dataset.state = model.state;
+    if (count) count.textContent = model.text;
+  }
+}
+
+/* =====================================================================
+ * 12. Boot
  * ===================================================================== */
 
 async function boot() {
+  paintIcons();
   wireChrome();
+  wireSheet();
 
   await loadChrome();
   app.i18n = createI18n({
@@ -945,6 +1749,14 @@ async function boot() {
 
   await mountBands();
 
+  // The bands first, then the dock that shows them, then the map that draws
+  // them. That order is the app's whole thesis: the band is the answer, the
+  // map is the answer drawn, and if the two ever disagree the text is the one
+  // that has to be right.
+  mountDock();
+  await mountMap();
+  paintPills();
+
   // Resolve silently when permission was granted on an earlier visit, so a
   // returning user does not have to press anything.
   if (navigator.permissions && navigator.permissions.query) {
@@ -962,11 +1774,23 @@ async function boot() {
 }
 
 function wireChrome() {
-  $("#locate").addEventListener("click", () => startWatching(true));
+  $("#locate").addEventListener("click", () => {
+    // One button, two jobs, and never both at once: with no fix it asks for
+    // one; with a fix it comes back to it (UI_SPEC 3.4).
+    if (app.position && app.map) app.map.recentre();
+    else startWatching(true);
+  });
 
-  for (const b of $$(".langs button")) {
-    b.addEventListener("click", () => setLanguage(b.dataset.lang));
+  for (const input of $$(".langs input[name=lang]")) {
+    input.addEventListener("change", () => {
+      if (input.checked) setLanguage(input.value);
+    });
   }
+
+  // here.js publishes its map state through ctx.onHere AND as a bubbling
+  // event, so a band mounted outside this shell can still drive a map. Both
+  // land on the same handler, and the handler is idempotent.
+  document.addEventListener("behere:here", (e) => acceptHereState(e.detail));
 
   const bar = $("#offline-bar");
   const paintOnline = () => {

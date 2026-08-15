@@ -173,13 +173,20 @@ serialiser.
 
 ```json
 {
-  "cells": {"44021": ["grid/1kmN3116E3879.json", "…188 entries…"], "…7 cities…": []},
+  "cells": {"44021": ["grid/1kmN3116E3879.json", "…188 entries…"], "…8 cities…": []},
   "cities": ["21004","25023","25068","25121","35013","44021","62063","81001","92003"],
-  "count": 658,
+  "count": 707,
   "files": ["21004/meta.json", "…", "grid/1kmN2955E4015.json", "…", "nis_history.json"],
   "vintage": "2025-01-01"
 }
 ```
+
+> `count` was **658** when this section was written, for the seven original
+> pilots. Court-Saint-Etienne and Mont-Saint-Guibert took it to **707** across
+> **674** grid shards; the schema did not change. The map-first revamp of
+> 15 August 2026 changed neither, because it baked nothing: the only data files
+> it touched are the three hand-curated `i18n/*.json`, which were already in
+> `files`.
 
 | Field | Meaning |
 |---|---|
@@ -194,7 +201,28 @@ Rules the worker depends on:
 - **Every entry resolves.** Gate 7 already proves each cell in `<nis>/meta.json.cells` has a shard; `files` is generated from the bytes actually written, so a 404 during the precache means the deployed tree and the manifest disagree.
 - **The install may never fail because of it.** `precacheData()` is wrapped in `try/catch`, batches through `Promise.allSettled`, and skips what is already cached. A quota error, an offline install or a single missing shard degrades to the pre-existing lazy behaviour.
 - **It is served network-first**, not cache-first: a stale manifest would precache the previous release's shard list.
-- **The page never assumes it worked.** `{type:"DATA_STATUS"}` returns `{total, stored, cities, vintage, ready}` counted from the cache's own keys, and the footer prints that instead of a promise.
+- **The page never assumes it worked.** `{type:"DATA_STATUS"}` returns `{total, stored, cities, vintage, ready}` counted from the cache's own keys, and the app sheet prints that instead of a promise.
+- **No entry may be absolute, and the OSM tile host may never appear.** Every `files` entry is a path relative to `web/data/`; a leading `/`, a `//`, a `://` or a `..` fails the build. `bake.py`'s `assert_baked_relpath()` makes one impossible to *write*; `gen_precache.py`'s **tile gate** (gate 13) re-checks the bytes actually shipped, so a hand-edited or merge-mangled manifest is caught too. The reason is not tidiness: `sw.js` precaches every entry of this file at install for all nine cities at once, so a tile URL here would be bulk downloading, which the OSM tile usage policy forbids in terms.
+
+### 2.2 The app shell precache list
+
+`precache.json` covers `web/data/` only. The shell is a separate, hand-maintained
+list inside `web/sw.js`, in three tiers, and the tiers are a contract of their own:
+
+| Tier | Failure mode | What belongs in it |
+|---|---|---|
+| `SHELL_REQUIRED` (23 entries) | `cache.addAll`, so **one 404 fails the whole install** and the user gets no worker | Everything without which the app is not the app: 4 document entries (`./`, `index.html`, `offline.html`, `manifest.webmanifest`), 3 stylesheets (`tokens.css`, `app.css`, `map.css`), 10 core modules (`main`, `map`, `mercator`, `grid`, `geo`, `i18n`, `icons`, `stats`, `sw-register`, `offline`), **the 4 `.woff2` faces**, and the 2 core PNG icons |
+| `SHELL_EXPECTED` (0 entries) | added one at a time, a miss is logged and skipped | A module that has landed in the deploy but may not be in every build. **Currently empty, and that is the finished state, not an oversight.** It held `./app/dock.js` while the revamp was in flight; the dock ended up inside `main.js` (`openBand` / `wireDock` / `watchPillState`), so nothing on disk carries that name and listing it would make every install log a warning about a file the app does not want. The tier is kept for the *next* module that ships mid-flight |
+| `SHELL_OPTIONAL` (10 entries) | added one at a time, a miss is ignored silently | The 5 band modules, `gtfsrt.js`, `404.html` and the 3 decorative icons: a missing band collapses its own panel and must never take the worker down with it |
+
+Two rules that are easy to get wrong:
+
+- **The fonts are `REQUIRED`, not `OPTIONAL`.** A shell that precaches `tokens.css` but not its faces installs happily and then renders offline in `system-ui`. They cost about 53 kB once, they are already Brotli-compressed, and they never touch the 3 MB budget, which walks `web/data/` only.
+- **No shell entry may contain a scheme.** All are relative (`"./app/map.js"`), because the site is a project page under `/behere/` where a leading slash 404s. The tile gate enforces this too: a `://` anywhere in any of the three lists fails the build.
+
+Renaming any `SHELL_REQUIRED` entry is a breaking change that fails the install
+loudly, which is correct but obscure to debug. `scripts/test_sw_offline.mjs`
+turns red first.
 
 ---
 
@@ -741,7 +769,7 @@ The second row is why gate 10 exists: without it, an English sentence rendered i
 
 ## 10. Runtime fetch contract
 
-Every source PLAN section 3.1 calls live. **All eight were re-verified on 15 August 2026** by sending `Origin: https://example.github.io` and reading `access-control-allow-origin`.
+Every source PLAN section 3.1 calls live. **All eight `fetch()` sources were re-verified on 15 August 2026** by sending `Origin: https://example.github.io` and reading `access-control-allow-origin`. Section 10.8 adds a ninth runtime source, the OSM basemap, which is fetched as an `<img>` and so has no CORS story to verify at all.
 
 ### 10.0 Rules that bind all of them
 
@@ -749,20 +777,28 @@ Every source PLAN section 3.1 calls live. **All eight were re-verified on 15 Aug
 - **Debounce geolocation.** No polling loops (acceptance test 9).
 - Every response is cached in the SW with the TTL below. On expiry, serve stale immediately and revalidate.
 - **Every failure shows the layer's source and the age of what is displayed**, never a spinner and never a blank card.
-- The CSP `<meta>` tag lists exactly these hosts and nothing else (Pages cannot send headers):
+- The CSP `<meta>` tag lists exactly these hosts and nothing else (Pages cannot send headers). **Updated 15 August 2026** for the basemap:
 
 ```
 default-src 'self';
 connect-src 'self'
+  https://api-management-discovery-production.azure-api.net
   https://api.irail.be
   https://opendata-api.statbel.fgov.be
   https://geoservices.wallonie.be
   https://geo.onroerenderfgoed.be
-  https://api-management-discovery-production.azure-api.net
   https://www.odwb.be https://data.stad.gent https://opendata.brussels.be
   https://catalog.datastore.brussels;
-img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; object-src 'none'
+img-src 'self' https://tile.openstreetmap.org;
+style-src 'self' 'unsafe-inline'; script-src 'self';
+base-uri 'none'; object-src 'none'; form-action 'none'
 ```
+
+Three things about that policy are load-bearing rather than cosmetic:
+
+1. **The tile host is in `img-src` and in no other directive.** The basemap is `<img>` elements, not `fetch()`, so CORS never applies to it and it must not be in `connect-src`. Putting it there would be both useless and a false statement about what the app calls.
+2. **`data:` was dropped from `img-src`.** Nothing in the app uses a data URI image any more; icons are inline SVG path data from `icons.js`. Narrowing a directive that nothing needs is free.
+3. **There is no `font-src` and no `style-src` exception**, because the fonts are same-origin under `web/fonts/`. The Organic design system's own stylesheet opens with an `@import` from `fonts.googleapis.com`; that line is deliberately absent from `tokens.css`, which is what lets `default-src 'self'` stand unqualified.
 
 ### 10.1 iRail, live train departures
 
@@ -865,6 +901,39 @@ PLAN quotes a flat 20,000/day. That is only correct for ODWB.
 | Cache TTL | **24 h** |
 | On failure | Collapse. Licence terms here are unverified (PLAN section 11), so treat as discovery only until cleared |
 
+### 10.8 OpenStreetMap raster basemap
+
+**Added 15 August 2026 with the map-first revamp.** It is the odd one out in this
+section and the differences are the point: it is not `fetch()`, it has no CORS
+story, it has no TTL negotiated with a publisher, and its terms are licence
+conditions rather than engineering preferences.
+
+| | |
+|---|---|
+| URL | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` |
+| Transport | **`<img>`, not `fetch()`.** Therefore `img-src`, never `connect-src`, and CORS is not involved |
+| Credential | None, and none possible: no query string, no header, no cookie |
+| Licence | **ODbL 1.0.** `© OpenStreetMap contributors`, linking to `https://www.openstreetmap.org/copyright`, drawn on the map on any frame where a tile has been painted, and reachable by keyboard |
+| Cache | Its own `behere-tiles-v1`, **never** `precache.json` and never the shell precache |
+| Cache TTL | **7 days**, long on purpose: a Belgian street changes on the order of months and every re-request is traffic on a volunteer-funded CDN |
+| Cap | **300 entries**, evicted least-recently-**used**, not oldest-stored |
+| Rate discipline | Only tiles intersecting the current viewport, one zoom level at a time. **No prefetch, no adjacent-tile lookahead, no background refresh, no scraping loop** |
+| On failure | Three consecutive errors switch the layer to `failed`; the baked vector layers keep drawing and the app keeps answering. Already-loaded tiles are **kept** and stay attributed |
+| Offline | Absent. No request is made and none is queued. Acceptance test 1 never touched tiles |
+
+**Two timestamps per tile, and collapsing them into one is a bug that hides for
+weeks.** The index stores `{tileUrl: [fetchedAtMs, lastUsedMs]}`. The TTL asks
+"how old is this picture"; the LRU asks "when did anyone last want it". A cache
+hit moves `[1]` only; a network store rewrites both. If a hit refreshed
+`fetchedAt`, a tile on the user's own street would be looked at daily, stay
+"fresh" for ever and never revalidate, so the tiles that rot would be exactly
+the ones the user cares most about.
+
+The index lives at a synthetic same-origin key **inside** the tile cache, so
+purging the basemap purges its bookkeeping in one call. It is never counted
+against the 300 and never served as an asset: the fetch handler 404s it
+explicitly.
+
 ---
 
 ## 11. Byte budget
@@ -885,12 +954,14 @@ Measured end to end: real extraction of all 303,800 pilot addresses, real 2025 s
 | Court-Saint-Etienne | 25023 | 3,770 | 162 | 25 | 34 | 94 | 359 | 1,387 | 6,439 | **26,726** | **34,911** | n/a | new |
 | Mont-Saint-Guibert | 25068 | 2,648 | 120 | 21 | 22 | 92 | 333 | 1,035 | 4,619 | **18,385** | **24,372** | n/a | new |
 | **Nine cities** | | **303,800** | **7,792** | **947** | **674** | **4,857** | | | | | **1,513,497** | | |
-| shared (`municipalities` + `nis_history` + i18n + `meta` + `precache`) | | | | | | | | | | | 37,239 | | |
-| **GRAND TOTAL** | | | | | | | | | | | **1,550,736 B = 1.48 MB** | | |
+| shared (`municipalities` + `nis_history` + i18n + `meta` + `precache`) | | | | | | | | | | | 39,536 | | |
+| **GRAND TOTAL** | | | | | | | | | | | **1,553,038 B = 1.48 MB** | | |
+
+**Re-measured 15 August 2026 after the map-first revamp: 1,550,736 → 1,553,038 B, up 2,302, all of it in the shared row.** The revamp baked nothing: the entire delta is chrome copy hand-added to `i18n/{en,nl,fr}.json` (en +708, nl +782, fr +812) for the dock, the map controls, the tile note and the three distinct silences. Those three files are the only data files the revamp touched, `bake.py` does not generate them, and gate 9 is clean against the result, so this figure will not move again until someone edits them or the pilot set changes.
 
 Court-Saint-Etienne and Mont-Saint-Guibert were added on 15 August 2026 and cost **56,354 gzipped bytes** between them, 1.8% of the ceiling. Ottignies-LLN's grid figure *fell* from 55,398 to 52,401 despite nothing about it changing: its two new neighbours share 1 km cells with it, and a shared shard's bytes are apportioned across every city that claims it. The city totals are therefore an attribution, not a partition; only the GRAND TOTAL is a measured fact about the shipped tree.
 
-**Against acceptance test 10 (the pilot set under 3 MB gzipped): 1.48 MB for nine cities. Passing with 51% headroom.**
+**Against acceptance test 10 (the pilot set under 3 MB gzipped): 1,553,038 B for nine cities, 49.4% of the 3,145,728 B ceiling. Passing with 50.6% headroom.**
 
 ### 11.1 Where the saving came from
 
@@ -935,6 +1006,8 @@ Everything below is measured. PLAN should be read through this list.
 | 10 | §3.2 / §6: sector geometry `…_20260101` | The 2026 file is not the pinned vintage | Pinned to `…_20250101`, matching the non-negotiables |
 | 11 | §8: Ghent 893 KB gzipped | **542,924 B** under this schema | 41% under budget (§11) |
 | 12 | (unstated) | 674 pilot cells also hold **95,500 addresses from unshipped municipalities** | Counted in `fm`, not baked (§7.4) |
+| 13 | §6: "Four bands stacked on one screen. No tabs, no dashboard." | **A reversal, not a measurement.** The app is map-first: a full-bleed map is the page, five bands in a dock of pills, one expandable over it | PLAN §6 rewritten and dated 15 August 2026. The objection to a *dashboard* still stands and is still honoured; what changed is that a stacked column answered a spatial question in words while showing nothing of the ground |
+| 14 | §3.1 listed eight runtime sources, all `fetch()` | A ninth runtime source exists, the OSM basemap, and it is an `<img>` | New §10.8. It is in `img-src`, never `connect-src`, and it is the only source with licence conditions attached to *how it is displayed* |
 
 Two more worth carrying forward, from the ground-truth passes rather than from PLAN:
 
@@ -960,4 +1033,13 @@ The bake is not done until all of these pass.
 11. **Vintage guard.** `node scripts/test_stats.mjs` and `node scripts/test_zoom.mjs` pass against the 55 records in `nis_history.json` and the 565 codes in `municipalities.json` (acceptance test 3). `--live` additionally calls the Statbel HVD API for every pilot.
 12. **Cold cache.** `node scripts/test_sw_offline.mjs` passes: `web/sw.js` is installed for real, the network is cut, and every pilot city resolves address, sector and municipality from the cache alone (acceptance test 1, PLAN phase 1 exit criterion).
 
-Gates 9 to 12 need `node` only as a test runner. There is no `package.json`, no `npm install` and no dependency: they are plain files, exactly like `scripts/*.py`.
+**Added 15 August 2026 with the map-first revamp:**
+
+13. **The tile gate.** Runs inside gate 9, so it cannot be skipped: `gen_precache.py` fails the build if `tile.openstreetmap.org` appears in `precache.json`, in any `sw.js` shell list, on any line calling `cache.add`/`addAll`, or more than once in executable code outside the `TILE_HOST` constant; and if any shell entry or manifest path carries a scheme. It also fails if it finds **no** shell list at all, so it can never pass vacuously. `--tiles-only` runs it alone. Backed at runtime by `node scripts/test_tiles.mjs`, which proves the cache is bounded at 300 and evicted least-recently-used.
+14. **The map.** `node scripts/test_map.mjs` passes: the Web Mercator projection and tile arithmetic, the vector layers, the markers, the gestures and the keyboard handlers.
+15. **The app as one thing.** `node scripts/test_integration.mjs` passes: the real `index.html` and the real `main.js` boot over `scripts/domstub.mjs` and a Brussels fix is driven through shell → bands → map. This gate exists because gates 9 to 14 can all be green while the app is broken — each tests one file, and nothing was testing them together. Its first run found a shell shipping `chrome-left` against a stylesheet styling `chrome--tl`, a `#map-scale` no rule matched, and a `main.js` importing a module that does not exist.
+16. **Fonts.** `python3 scripts/fetch_fonts.py --check` passes with no network: all four `.woff2` match their sha256 in `scripts/fonts.lock.json`, and each family's OFL text is present beside it.
+
+Gates 9 to 15 need `node` only as a test runner. There is no `package.json`, no `npm install` and no dependency: they are plain files, exactly like `scripts/*.py`.
+
+**What no gate proves.** There is no browser in this loop. `domstub.mjs` is a JavaScript DOM, so gates 14 and 15 show that the wires connect and nothing throws; they cannot show that the map *looks* right. Layout, font rendering, real tile fetching, touch gestures and the dark theme are verified by eye.

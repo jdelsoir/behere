@@ -15,35 +15,75 @@
      in the link. It is pinned by hash rather than allowed with 'unsafe-inline':
      an external file cannot be referenced from an unknown depth either. -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src 'none'; img-src 'self' data:;
+      content="default-src 'self'; connect-src 'none'; img-src 'self';
                style-src 'self' 'unsafe-inline';
                script-src 'sha256-03/eY0AEzDc+v3R3bw5N7W9cGYNQLIgKXG/CrJe07jI=';
                base-uri 'none'; object-src 'none'; form-action 'none'">
 
-<meta name="theme-color" content="#0f1216" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#1d3a5a">
+<meta name="theme-color" content="#241a0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5ead8">
 <style>
-  /* Self-contained: app.css sits under the base path and cannot be linked from
-     an unknown depth. This is a deliberate, tiny duplicate of its tokens. */
-  :root { color-scheme: light dark; --bg:#fff; --ink:#14181d; --muted:#565d67; --accent:#1d3a5a; }
+  /* Self-contained on purpose. Pages serves this file for ANY unmatched path,
+     so it can be rendered from an arbitrary depth: app/tokens.css, app/app.css
+     and web/fonts/*.woff2 all sit under the base path and none of them can be
+     linked from here without knowing that depth in advance. So the handful of
+     Organic tokens this page actually uses are duplicated below, copied from
+     app/tokens.css, and the type falls back to the system stack rather than
+     pretending Caprasimo and Figtree can be loaded. Everything else about the
+     page is the same shape as the app: cream ground, warm espresso in dark,
+     28px card radius, terracotta accent ink. */
+  :root {
+    color-scheme: light dark;
+    --color-bg: #f5ead8;         /* Organic ground              */
+    --color-surface: #ebddc5;    /* one step up                 */
+    --color-text: #201e1d;       /* 13.95:1 on the ground       */
+    --color-muted: #645c50;      /* neutral-700, 5.53:1         */
+    --color-accent-ink: #8c491a; /* accent-700,  5.72:1         */
+    --radius-lg: 28px;
+    --space-3: 13.2px;
+    --space-4: 17.6px;
+    --space-6: 26.4px;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#0f1216; --ink:#e7eaee; --muted:#a4adb8; --accent:#7fa9d9; }
+    :root {
+      --color-bg: #241a0e;         /* the derived warm espresso  */
+      --color-surface: #2f2419;
+      --color-text: #f5ead8;       /* 14.35:1 on the ground      */
+      --color-muted: #c0b6a5;      /* neutral-400, 8.52:1        */
+      --color-accent-ink: #f6a06b; /* accent-400,  8.27:1        */
+    }
   }
+  * { box-sizing: border-box }
+  html { -webkit-text-size-adjust: 100% }
   body {
-    margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--ink);
+    margin: 0; padding: var(--space-6) var(--space-4);
+    background: var(--color-bg); color: var(--color-text);
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    line-height: 1.5; display: grid; place-items: center; min-height: 80vh;
+    line-height: 1.55; display: grid; place-items: center; min-height: 88vh;
   }
-  .card { max-width: 30rem; }
-  h1 { font-size: 1.5rem; margin: 0 0 .4rem; }
-  p { margin: .5rem 0; }
-  .sub { color: var(--muted); font-size: .875rem; }
-  a { color: var(--accent); }
+  .card {
+    max-width: 32rem; width: 100%;
+    background: var(--color-surface); border-radius: var(--radius-lg);
+    padding: var(--space-6) var(--space-4);
+  }
+  .kicker {
+    margin: 0 0 6px; font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--color-accent-ink);
+  }
+  h1 { font-size: 26px; line-height: 1.12; margin: 0 0 var(--space-3); text-wrap: balance }
+  p { margin: var(--space-3) 0; text-wrap: pretty }
+  .sub { color: var(--color-muted); font-size: 14px }
+  a { color: var(--color-accent-ink) }
+  a:focus-visible {
+    outline: 3px solid var(--color-accent-ink); outline-offset: 2px;
+    border-radius: 8px;
+  }
 </style>
 </head>
 
 <body>
 <div class="card">
+  <p class="kicker">BeHERE</p>
   <h1>That page is not part of BeHERE</h1>
   <p class="sub">
     BeHERE is a single screen. If you followed a link to a data file that no

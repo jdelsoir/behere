@@ -1,0 +1,107 @@
+{
+  "figtree": "variable",
+  "files": [
+    {
+      "bytes": 4403,
+      "family": "Caprasimo",
+      "kind": "licence",
+      "mirrors": [
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/caprasimo/OFL.txt",
+        "https://raw.githubusercontent.com/docrepair-fonts/caprasimo-fonts/main/OFL.txt"
+      ],
+      "name": "OFL-Caprasimo.txt",
+      "sha256": "755d165efdbad1ad4a7840aa1f2484b0111627993e162bdcfb25fb2c277db955",
+      "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/caprasimo/OFL.txt"
+    },
+    {
+      "bytes": 4388,
+      "family": "Figtree",
+      "kind": "licence",
+      "mirrors": [
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/figtree/OFL.txt",
+        "https://raw.githubusercontent.com/erikdkennedy/figtree/master/OFL.txt"
+      ],
+      "name": "OFL-Figtree.txt",
+      "sha256": "140d37233e7f3ce7313798befa9600893bcceaf41a55fa0fa5ad52f7f657a268",
+      "url": "https://raw.githubusercontent.com/google/fonts/main/ofl/figtree/OFL.txt"
+    },
+    {
+      "axis": "static",
+      "bytes": 2332,
+      "family": "Caprasimo",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/fontsource/fonts/caprasimo@latest/latin-ext-400-normal.woff2",
+        "https://api.fontsource.org/v1/fonts/caprasimo/latin-ext-400-normal.woff2"
+      ],
+      "name": "caprasimo-400-latin-ext.woff2",
+      "sha256": "11b01b946c72750b01287b357b02c67691677397fdf00fe026f89a62af90938a",
+      "subset": "latin-ext",
+      "unicode_range": "U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF",
+      "url": "https://cdn.jsdelivr.net/fontsource/fonts/caprasimo@latest/latin-ext-400-normal.woff2",
+      "weight": "400",
+      "woff2": {
+        "sfnt_bytes": 3824,
+        "tables": 13
+      }
+    },
+    {
+      "axis": "static",
+      "bytes": 20888,
+      "family": "Caprasimo",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/fontsource/fonts/caprasimo@latest/latin-400-normal.woff2",
+        "https://api.fontsource.org/v1/fonts/caprasimo/latin-400-normal.woff2"
+      ],
+      "name": "caprasimo-400-latin.woff2",
+      "sha256": "b1969861df075a84958e7085a04de23f57a2fb6872be63d15dfaad0963c181e5",
+      "subset": "latin",
+      "unicode_range": "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD",
+      "url": "https://cdn.jsdelivr.net/fontsource/fonts/caprasimo@latest/latin-400-normal.woff2",
+      "weight": "400",
+      "woff2": {
+        "sfnt_bytes": 37372,
+        "tables": 13
+      }
+    },
+    {
+      "axis": "wght",
+      "bytes": 10280,
+      "family": "Figtree",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/fontsource/fonts/figtree:vf@latest/latin-ext-wght-normal.woff2",
+        "https://api.fontsource.org/v1/fonts/figtree/latin-ext-wght-normal.woff2"
+      ],
+      "name": "figtree-var-latin-ext.woff2",
+      "sha256": "bf7828e2c258cffcfa50a048ee388a36b95bc16b452e8d36fa797635dbe15965",
+      "subset": "latin-ext",
+      "unicode_range": "U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF",
+      "url": "https://cdn.jsdelivr.net/fontsource/fonts/figtree:vf@latest/latin-ext-wght-normal.woff2",
+      "weight": "300 900",
+      "woff2": {
+        "sfnt_bytes": 22408,
+        "tables": 20
+      }
+    },
+    {
+      "axis": "wght",
+      "bytes": 20156,
+      "family": "Figtree",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/fontsource/fonts/figtree:vf@latest/latin-wght-normal.woff2",
+        "https://api.fontsource.org/v1/fonts/figtree/latin-wght-normal.woff2"
+      ],
+      "name": "figtree-var-latin.woff2",
+      "sha256": "4ba7d3d096695818fe0686be4f1e82c6b05134e18a22260336130335027462dd",
+      "subset": "latin",
+      "unicode_range": "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD",
+      "url": "https://cdn.jsdelivr.net/fontsource/fonts/figtree:vf@latest/latin-wght-normal.woff2",
+      "weight": "300 900",
+      "woff2": {
+        "sfnt_bytes": 40084,
+        "tables": 20
+      }
+    }
+  ],
+  "licence": "OFL-1.1",
+  "note": "Vendored fonts under web/fonts/. Regenerate with python3 scripts/fetch_fonts.py; verify offline with --check."
+}

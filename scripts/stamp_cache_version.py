@@ -13,13 +13,18 @@ sw = os.path.join(root, "sw.js")
 if not os.path.exists(sw):
     sys.exit("sw.js not found in %s" % root)
 
-# Hash index.html + manifest + all CSS/JS so any asset change rotates the cache name.
+# Hash every asset the shell cache holds, so any change to one rotates the cache
+# name. The fonts and icons are in sw.js's SHELL_REQUIRED and are served
+# cache-first under fixed filenames: leaving .woff2 and .png out would mean a
+# re-vendored font or a repalette icon is never picked up by a returning user.
+# web/data is all .json, so no data vintage can rotate the shell through this.
+SUFFIXES = (".html", ".css", ".js", ".mjs", ".webmanifest", ".woff2", ".png")
 h = hashlib.sha256()
 files = []
 for dp, dns, fns in os.walk(root):
     dns[:] = [d for d in dns if d not in (".git", "node_modules")]
     for fn in fns:
-        if fn.endswith((".html", ".css", ".js", ".mjs", ".webmanifest")) and fn != "sw.js":
+        if fn.endswith(SUFFIXES) and fn != "sw.js":
             files.append(os.path.join(dp, fn))
 for f in sorted(files):
     with open(f, "rb") as fh:

@@ -1,0 +1,433 @@
+/* BeHERE design tokens. The Organic design system, ported.
+ *
+ * This file is the ONLY place a colour, font, space, radius or shadow value is
+ * written down. app/app.css and every band module read them through var().
+ * If you are about to type a hex or a px into app.css, the value belongs here
+ * instead, or it already does.
+ *
+ * SOURCE
+ *   design/prototype/_ds/organic-42764194-de70-4e49-b9b1-f2c1b5c3cc65/styles.css
+ *   design/prototype/_ds/organic-42764194-de70-4e49-b9b1-f2c1b5c3cc65/readme.md
+ *   Every Organic token name is reproduced EXACTLY so the two files can be
+ *   diffed against each other and can never quietly drift. Additions BeHERE
+ *   needs and Organic does not have are grouped separately and labelled.
+ *   Deviations from Organic are listed in docs/DESIGN_TOKENS.md section 6 and
+ *   marked DEVIATION at the point of use below.
+ *
+ * DEPENDENCIES: none. No @import, no CDN, no font service, no build step.
+ * The fonts are self-hosted woff2 under /behere/fonts/ and are reached with a
+ * relative URL, because the site is a GitHub Pages project page served from
+ * /behere/ and a leading slash would 404 (same rule as web/index.html).
+ *
+ * THEMES
+ *   The complete light palette is defined on bare :root. The dark block
+ *   redefines ONLY the tokens whose value changes; every ramp step, space,
+ *   radius and font token is shared. The dark ground is a deep warm brown
+ *   derived from the ramps, never a grey: see docs/DESIGN_TOKENS.md section 3.
+ *
+ * CONTRAST
+ *   Every text-on-ground pair in both themes is measured and tabulated in
+ *   docs/DESIGN_TOKENS.md section 5. Nothing that carries body text is below
+ *   4.5:1. Two tokens (--color-accent, --color-accent-2) are brand hues that
+ *   do not reach 3:1 on --color-surface; their permitted use is constrained in
+ *   the comment beside them and they never carry text.
+ */
+
+/* ==================================================================== fonts */
+
+/* Caprasimo and Figtree are both SIL Open Font License 1.1, so vendoring the
+ * woff2 into a public repo is clean provided the licence ships with them:
+ *   web/fonts/OFL-Caprasimo.txt
+ *   web/fonts/OFL-Figtree.txt
+ * font-display: swap, never `block`, since an offline-first app must never hold
+ * text invisible waiting on a font it may not have. The fallback stacks below
+ * are humanist sans faces close to Figtree in width and x-height, so the swap
+ * reflows a line, not a layout.
+ *
+ * Files another agent vendors, exactly these names, under web/fonts/:
+ *   caprasimo-400-latin.woff2       caprasimo-400-latin-ext.woff2
+ *   figtree-var-latin.woff2         figtree-var-latin-ext.woff2
+ * Figtree is the variable face (wght 300-900) so one file covers 400/500/600/
+ * 700 and no synthetic bolding occurs. Caprasimo has a single weight, 400.
+ * Figtree ships no italic here; `.now-raw` gets a synthetic oblique, which is
+ * correct for one italic line of quoted source prose.
+ */
+
+@font-face {
+  font-family: "Caprasimo";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/caprasimo-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+                 U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+                 U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Caprasimo";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/caprasimo-400-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+                 U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+                 U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+                 U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url("../fonts/figtree-var-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+                 U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+                 U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Figtree";
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url("../fonts/figtree-var-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+                 U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+                 U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+                 U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* =========================================================== light: Organic */
+
+:root {
+  color-scheme: light dark;
+
+  /* --- roles, verbatim from Organic ------------------------------------ */
+  --color-bg: #f5ead8;
+  --color-surface: #ebddc5;
+  --color-text: #201e1d;
+
+  /* The brand hues. DECORATIVE ONLY: large shapes, the "you are here" pin,
+     illustration, the washed map ground. They reach 3.03:1 and 3.14:1 on
+     --color-bg but only 2.69:1 and 2.79:1 on --color-surface, so they must
+     never be the sole carrier of meaning on a surface and must never carry
+     text. Text and chrome use --color-accent-ink / --color-accent-2-ink. */
+  --color-accent: #c67139;
+  --color-accent-2: #7a8a5e;
+
+  /* DEVIATION: Organic writes this as color-mix(in srgb, #201e1d 16%,
+     transparent). Same rendered value, expressed as rgba() so the sheet has no
+     modern-CSS cliff and so the dark block can restate it from the cream ink
+     rather than re-mixing a hard-coded hex. */
+  --color-divider: rgba(32, 30, 29, 0.16);
+
+  /* Tonal ramps, generated in OKLCH on one shared lightness scale, so the
+     same step of any role matches the others in visual value. These are
+     ABSOLUTE: they do NOT invert in dark mode. Dark mode picks different
+     steps, it does not renumber them. */
+  --color-neutral-100: #f9f4ed;
+  --color-neutral-200: #eee7db;
+  --color-neutral-300: #dcd3c4;
+  --color-neutral-400: #c0b6a5;
+  --color-neutral-500: #a19786;
+  --color-neutral-600: #82796a;
+  --color-neutral-700: #645c50;
+  --color-neutral-800: #474238;
+  --color-neutral-900: #2e2b25;
+
+  --color-accent-100: #fff2eb;
+  --color-accent-200: #ffe1d0;
+  --color-accent-300: #ffc6a5;
+  --color-accent-400: #f6a06b;
+  --color-accent-500: #d67f48;
+  --color-accent-600: #b2622d;
+  --color-accent-700: #8c491a;
+  --color-accent-800: #643312;
+  --color-accent-900: #402310;
+
+  --color-accent-2-100: #f0fae1;
+  --color-accent-2-200: #e1eecc;
+  --color-accent-2-300: #ccdbb2;
+  --color-accent-2-400: #aebf92;
+  --color-accent-2-500: #8fa073;
+  --color-accent-2-600: #728157;
+  --color-accent-2-700: #56633f;
+  --color-accent-2-800: #3d472b;
+  --color-accent-2-900: #272e1b;
+
+  /* The sage ramp ALONE runs one step past each end. Nothing else needs it,
+     and the "same step of any role has the same visual weight" invariant is
+     untouched because no rule ever pairs a 050/950 with another role's.
+     WHY only sage: --ink-stops starts one step deeper than --ink-cell and
+     --ink-sector (accent-2-800, not -700) because it must clear 8.27:1 on the
+     marker pill. So the toggled-on stops chip spends 800 on its base and 900
+     on its hover, and the Organic rule "a hover tint and a pressed state one
+     step further along the ramp" has nowhere left to go. Same story mirrored
+     in dark, where --ink-stops is accent-2-200 and its hover is accent-2-100.
+
+     Derived on the ramp's own shared OKLCH lightness scale, by the same move
+     tokens.css already used to reach the dark ground from accent-900:
+     one step further (dL -0.065 at the deep end, +0.027 at the compressed
+     light end) with the chroma tapered to 0.80, exactly as that derivation
+     tapers it.
+       900 L .2885 C .0342 H 124.9  ->  950 L .2240 C .0288 H 126.4
+       100 L .9710 C .0345 H 124.9  ->  050 L .9917 C .0229 H 120.2
+     The 050 hue reads 120 rather than 125 because sRGB's green primary clips
+     at that lightness; it is the nearest in-gamut point on the line, and it is
+     a near-white with a sage cast, which is what it is for. Both carry
+     --color-on-accent far above 4.5:1 (15.58:1 and 16.76:1). */
+  --color-accent-2-050: #faffee;
+  --color-accent-2-950: #181e0f;
+
+  /* --- type, verbatim from Organic ------------------------------------- */
+  /* DEVIATION: the fallback list after the first family is lengthened from
+     `system-ui, sans-serif` so a phone without the woff2 still lands on a
+     humanist sans of similar width instead of Times. The first family, which
+     is what the design actually specifies, is unchanged. */
+  --font-heading: "Caprasimo", "Figtree", system-ui, -apple-system, "Segoe UI",
+                  Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-heading-weight: 400;
+  --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+
+  /* --- space, verbatim from Organic (4px grid at density 1.10) ---------- */
+  --space-1: 4.4px;
+  --space-2: 8.8px;
+  --space-3: 13.2px;
+  --space-4: 17.6px;
+  --space-6: 26.4px;
+  --space-8: 35.2px;
+
+  /* --- radius, verbatim from Organic ----------------------------------- */
+  --radius-sm: 8px;
+  --radius-md: 16px;
+  --radius-lg: 28px;
+
+  /* --- elevation, verbatim from Organic --------------------------------
+     Soft ink-tinted shadows on the light ground. DEVIATION: expressed as
+     rgba() rather than color-mix(in srgb, #2e2b25 N%, transparent); identical
+     rendered value, no modern-CSS dependency. */
+  --shadow-sm: 0 1px 2px rgba(46, 43, 37, 0.14);
+  --shadow-md: 0 3px 10px rgba(46, 43, 37, 0.16);
+  --shadow-lg: 0 12px 32px rgba(46, 43, 37, 0.22);
+
+  /* ================================================ BeHERE additions ====
+     Everything below this line is NOT in Organic. It is derived from the
+     ramps above and exists because BeHERE has to say things Organic never
+     had to say: that a figure is real but old, that a layer published
+     nothing, that a departure is live rather than printed. Each one names a
+     ramp step in its comment so the derivation is auditable. */
+
+  /* Secondary ink. Organic uses color-mix(--color-text 55%) for .text-muted,
+     which lands at 4.2:1 on --color-bg (under 4.5:1), and BeHERE sets real
+     body copy in this colour (source lines, distances, the quiet empty-state
+     prose). So muted ink is a ramp step instead: --color-neutral-700. */
+  --color-muted: #645c50;                 /* neutral-700  5.53:1 on bg */
+
+  /* Accent that is allowed to carry text and chrome. Organic's own rule:
+     "for paragraph-size text in the accent use a deep ramp step
+     (--color-accent-700 on this ground)". Links, ghost buttons, the focus
+     ring, live departure times and icon strokes all use this, NOT
+     --color-accent. */
+  --color-accent-ink: #8c491a;            /* accent-700    5.72:1 on bg */
+  --color-accent-2-ink: #56633f;          /* accent-2-700  5.43:1 on bg */
+
+  /* Solid accent fills that carry a label: the primary button, a toggled-on
+     layer chip, the pressed segment. --color-accent itself is too light to
+     put 14px text on (3.03:1 with the cream), so the fill is the deep step
+     and the label is neutral-100. */
+  --color-accent-solid: #8c491a;          /* accent-700 */
+  --color-accent-solid-hover: #643312;    /* accent-800, one step past base */
+  --color-accent-solid-active: #402310;   /* accent-900 */
+  --color-accent-2-solid: #56633f;        /* accent-2-700 */
+  --color-on-accent: #f9f4ed;             /* neutral-100  6.22:1 on the fill */
+
+  /* Control boundaries that must be seen: the language switcher frame, the
+     open/closed pill, the left rule on a quiet block. Clears 3:1 on BOTH
+     grounds in BOTH themes at the same value, which is why the dark block
+     does not restate it. --color-divider stays for decorative row rules. */
+  --color-divider-strong: #82796a;        /* neutral-600  3.61:1 on bg */
+
+  /* Real, but old. Cached departures, last-known statistics. Never red, and
+     it always carries a date beside it. Hue 88 in OKLCH is the midpoint of
+     the terracotta (51.6) and sage (124.6) hues, so this third voice is as
+     far from both accents as the palette allows while staying warm. Built on
+     the same shared lightness scale: 700 for ink, 100 for the fill. */
+  --color-stale: #715a1e;                 /* stale-700  6.06:1 on stale-bg */
+  --color-stale-bg: #fcf5e2;              /* stale-100 */
+
+  /* Tinted chips. Organic's .tag-* pairs, lifted into tokens so the component
+     layer never has to branch on the theme: in dark the fill and the ink swap
+     ends of the ramp. Used by .tag, .go-line, .now-open and the band kickers. */
+  --color-tag-accent-bg: #fff2eb;         /* accent-100 */
+  --color-tag-accent-ink: #643312;        /* accent-800    9.46:1 */
+  --color-tag-accent-2-bg: #f0fae1;       /* accent-2-100 */
+  --color-tag-accent-2-ink: #3d472b;      /* accent-2-800  9.12:1 */
+  --color-tag-neutral-bg: #f9f4ed;        /* neutral-100 */
+  --color-tag-neutral-ink: #474238;       /* neutral-800   9.12:1 */
+
+  /* The dialog backdrop and any full-screen veil over the map. Organic's
+     dialog-backdrop is neutral-900 at 50%; this is that value as rgba(). */
+  --color-scrim: rgba(46, 43, 37, 0.5);
+
+  /* Codes are data, not prose: NIS numbers, postcodes, GTFS stop ids. Organic
+     has no monospace role; this is the system stack, which ships everywhere
+     and costs no bytes. */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
+               "Liberation Mono", monospace;
+
+  /* Organic's type sizes, lifted out of its component layer into tokens so
+     the two sheets cannot drift. Values are Organic's, unchanged. */
+  --text-2xs: 10px;    /* card kicker */
+  --text-xs: 11px;     /* card meta, tag, table head, figcaption */
+  --text-label: 12px;  /* field label */
+  --text-sm: 13px;     /* card body, segmented option, h6 */
+  --text-ui: 14px;     /* button, input, table cell, nav link */
+  --text-body: 15px;   /* body */
+  --text-lg: 17px;     /* card title */
+  --text-h6: 13px;
+  --text-h5: 16px;
+  --text-h4: 20px;
+  --text-h3: 25px;
+  --text-h2: 32px;
+  --text-h1: 42px;
+
+  /* The one fluid size. The answer line is the largest string in the app and
+     the only reason it was opened, a street name. At Organic's fixed 42px a
+     long Belgian street name overflows a 320px phone, so this size alone
+     scales, landing on --text-h1 at 560px and above. */
+  --text-display: clamp(27px, 4.6vw + 12px, 42px);
+
+  --leading-body: 1.55;
+  --leading-heading: 1.12;
+  --tracking-heading: -0.015em;
+  --tracking-caps: 0.08em;
+
+  /* Pills. Organic hard-codes 999px in its rounded-frame block; named here so
+     app.css never types the number. */
+  --radius-pill: 999px;
+
+  /* One step past --space-8, same 4.4px grid (48 x 1.10). A full-screen map
+     needs a gutter larger than Organic's densest step. */
+  --space-12: 52.8px;
+
+  /* Safe-area insets, for map chrome in a standalone PWA on a notched phone.
+     Requires <meta name="viewport" content="... viewport-fit=cover"> in the
+     shell; without it these resolve to 0px and nothing breaks. */
+  --inset-top: env(safe-area-inset-top, 0px);
+  --inset-right: env(safe-area-inset-right, 0px);
+  --inset-bottom: env(safe-area-inset-bottom, 0px);
+  --inset-left: env(safe-area-inset-left, 0px);
+
+  /* How the OSM raster tiles are washed so they sit UNDER the warm palette
+     instead of fighting it. Organic's .washed idea, applied to the basemap.
+     Apply to the tile layer only, never to the vector overlays or the labels.
+     Never invert(): an inverted basemap is a colour negative of somebody
+     else's cartography, not a dark map, and it is a different-looking
+     derivative work.
+
+     ONE NAME FOR ONE FACT. This token used to be called --map-tile-filter here
+     while app.css defined a DIFFERENT --tile-filter and map.css read
+     `var(--tile-filter, var(--map-tile-filter))`. Three names, two values, and
+     whichever won was decided by stylesheet order rather than by anyone.
+
+     The value below is app.css's, not this file's previous one, and the extra
+     opacity(0.94) is why: the effective composite alpha over the ground is
+     --tile-alpha x 0.94 = 0.583, and every stroke contrast ratio in UI_SPEC 7.3
+     was measured against the fills that composite produces. The lighter hand
+     this file used to carry (saturate .68 / contrast .9 / brightness 1.06, no
+     opacity term) would move all of them. Load-bearing numbers, not taste.
+
+     --tile-alpha lives here too, for the same reason: map.css and app.css both
+     read it and neither should own it. */
+  --tile-filter: saturate(0.6) contrast(0.85) brightness(1.1) opacity(0.94);
+  --tile-alpha: 0.62;
+}
+
+/* ============================================================= warm dark ==
+ * Only the tokens whose value changes. The ramps, the fonts, the spaces, the
+ * radii, --color-divider-strong and the type scale are all shared.
+ *
+ * THE GROUND IS BROWN, NOT GREY, AND THAT IS THE POINT.
+ * Organic's readme: "Do not desaturate the palette into greys, warmth is the
+ * point." The obvious dark ground would be --color-text #201e1d, but that is
+ * an achromatic near-black: OKLCH C = 0.0036. --color-neutral-900 #2e2b25 is
+ * barely better at C = 0.0115. So the ground is the neutral and accent ramps
+ * folded together and carried one step further down:
+ *   neutral-900 (L .290 C .012 H 85) mixed 50/50 in OKLCH with
+ *   accent-900   (L .290 C .054 H 52)  ->  L .290 C .033 H 68
+ *   carried one ramp step darker (dL -.065, chroma tapered)  ->  #241a0e
+ * That is L .2265, C .0265, H 70.9, SEVEN times the chroma of #201e1d at the
+ * same lightness, and it reads as espresso rather than charcoal.
+ * --color-surface is one notch up the same line (#2f2419, L .270), so a card
+ * is lighter than the page in dark exactly as it is darker than the page in
+ * light. And the ink is the light theme's own ground, #f5ead8: the palette
+ * turns over rather than being replaced.
+ */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #241a0e;
+    --color-surface: #2f2419;
+    --color-text: #f5ead8;               /* the light theme's ground, 14.35:1 */
+
+    /* Brand hues move up the ramp by the same amount the ground moved down.
+       Unlike the light theme these DO clear 3:1 on both grounds (5.69 and
+       6.06), but keep using the -ink tokens for text so the rule is one rule
+       in both themes. */
+    --color-accent: #d67f48;             /* accent-500 */
+    --color-accent-2: #8fa073;           /* accent-2-500 */
+
+    --color-divider: rgba(245, 234, 216, 0.16);   /* the cream ink at 16% */
+
+    --color-muted: #c0b6a5;              /* neutral-400  8.52:1 on bg */
+    --color-accent-ink: #f6a06b;         /* accent-400   8.27:1 on bg */
+    --color-accent-2-ink: #aebf92;       /* accent-2-400 8.68:1 on bg */
+
+    --color-accent-solid: #d67f48;       /* accent-500 */
+    --color-accent-solid-hover: #f6a06b; /* accent-400, one step past base */
+    --color-accent-solid-active: #ffc6a5;/* accent-300 */
+    --color-accent-2-solid: #8fa073;     /* accent-2-500 */
+    --color-on-accent: #241a0e;          /* the ground   5.69:1 on the fill */
+
+    --color-stale: #d0b46f;              /* stale-400  7.03:1 on stale-bg */
+    --color-stale-bg: #342a0f;           /* stale-900 */
+
+    --color-tag-accent-bg: #402310;      /* accent-900 */
+    --color-tag-accent-ink: #ffc6a5;     /* accent-300    9.46:1 */
+    --color-tag-accent-2-bg: #272e1b;    /* accent-2-900 */
+    --color-tag-accent-2-ink: #ccdbb2;   /* accent-2-300  9.61:1 */
+    --color-tag-neutral-bg: #2e2b25;     /* neutral-900 */
+    --color-tag-neutral-ink: #dcd3c4;    /* neutral-300   9.51:1 */
+
+    --color-scrim: rgba(14, 9, 4, 0.66);
+
+    /* Organic's own note: on a dark ground elevation is "a hairline edge plus
+       ambient darkness". So each step is a 1px warm-cream ring under a soft
+       warm-black cast, rather than the light theme's ink-tinted drop. */
+    --shadow-sm: 0 0 0 1px rgba(245, 234, 216, 0.06),
+                 0 1px 2px rgba(9, 5, 2, 0.55);
+    --shadow-md: 0 0 0 1px rgba(245, 234, 216, 0.07),
+                 0 3px 10px rgba(9, 5, 2, 0.6);
+    --shadow-lg: 0 0 0 1px rgba(245, 234, 216, 0.09),
+                 0 12px 32px rgba(9, 5, 2, 0.7);
+
+    /* Darken and warm the basemap so it sits under the palette. No invert. */
+    --tile-filter: saturate(0.55) contrast(1.05) brightness(0.55) opacity(0.94);
+  }
+}
+
+/* ======================================================== the ground itself
+ * The only rule in this file. The page must paint its own background from a
+ * token, or a transparent body borrows whatever is behind it and the dark
+ * theme shows through as white. Everything else (every component, every band)
+ * belongs in app/app.css.
+ */
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+}

@@ -55,6 +55,55 @@
  */
 
 import { wgs84ToCell } from "./grid.js";
+import { icon } from "./icons.js";
+
+// ===========================================================================
+// 0. THE MAP-MARKER CONTRACT (identical in around.js, go.js and now.js)
+// ===========================================================================
+//
+// The revamp puts a full-bleed map under the bands (docs/UI_SPEC.md section 1).
+// The map must not re-derive anything: there is one authority per fact, and for
+// "what is around me" that authority is this module. So this band publishes the
+// positions it has already resolved, and `web/app/map.js` draws them.
+//
+// It is a PUBLISHING surface, not a query surface. Nothing here fetches on the
+// map's behalf, nothing here is triggered by a pan or a zoom, and asking for
+// the markers a second time costs nothing: the array is the by-product of the
+// render that already happened.
+//
+//   getMarkers()            -> BandMarker[]   ascending real haversine metres
+//   onMarkers(fn)           -> unsubscribe()  fires after every render pass
+//   select(key, opts)       -> boolean        true when this band owns the key
+//   getSelected()           -> string | null
+//   onSelect(fn)            -> unsubscribe()  fires when the READER picks a card
+//   getSummary()            -> {id, state, count, markers}
+//
+// `select()` is what the map calls when a marker is tapped; `onSelect()` is
+// what the map listens to when a card in the panel is tapped. The two never
+// loop, because `select()` does not re-emit unless asked
+// (`opts.silent !== false` is the map's contract, see the JSDoc below).
+//
+/**
+ * One placeable result, in the shape `map.js` draws.
+ *
+ * @typedef {Object} BandMarker
+ * @property {"around"|"go"|"now"} band  Which band owns the key.
+ * @property {string} key      Stable and globally unique. Survives a re-render.
+ * @property {number} lat      WGS84 degrees.
+ * @property {number} lon      WGS84 degrees.
+ * @property {string} label    Already resolved through CONTRACT section 9.
+ *                             NEVER machine-translated: it is an endonym unless
+ *                             a curated override said otherwise.
+ * @property {string} lang     BCP-47 tag for `label`, "" when unknown.
+ * @property {string} kind     Which layer chip owns it. For AROUND this is the
+ *                             layer id: "baked", "heritage", "wallonia",
+ *                             "ods:<dataset>".
+ * @property {string} cat      Category key, joins the i18n `cat` group.
+ * @property {number} dist     Real haversine metres from the device position.
+ * @property {string} sourceId Joins meta.json.sources[].id, so a marker can
+ *                             state its own source (acceptance test 8).
+ * @property {string} vintage  Per-record date, or "live".
+ */
 
 // ===========================================================================
 // 1. Constants
@@ -1237,11 +1286,61 @@ function el(tag, cls, text) {
   return n;
 }
 
+/**
+ * Bring a card into view INSIDE the scrolling panel body, and nowhere else.
+ *
+ * `block: "nearest"` is load-bearing: the page itself does not scroll in the
+ * revamped shell (`html, body { overflow: hidden }`), and "center" would ask
+ * every scrollable ancestor to move, including the map's own container.
+ * Smooth scrolling is dropped under `prefers-reduced-motion`.
+ */
+function scrollIntoPanel(node) {
+  if (!node || typeof node.scrollIntoView !== "function") return;
+  let smooth = false;
+  try {
+    smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    smooth = false;
+  }
+  try {
+    node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: smooth ? "smooth" : "auto" });
+  } catch {
+    node.scrollIntoView(false);
+  }
+}
+
+/**
+ * Which markup the note carries, so the stylesheet and the pill dot can tell
+ * the three honest silences apart WITHOUT a fourth translated sentence.
+ *
+ * UI_SPEC section 2.5 requires "published nothing here", "out of scope for this
+ * region by design" and "could not be reached" to be three distinct
+ * presentations, and only the last to read as a fault. The distinction already
+ * exists in this band's own layer states; this just surfaces it on the note
+ * element as a hook, so `app.css` can tone it and `dock.js` can dot it.
+ *
+ * The SENTENCE is unchanged and stays the whole message: a reader who never
+ * sees a colour still gets the full claim in words.
+ */
+const NOTE_KIND = {
+  ok: "answers",
+  empty: "nothing", //      the source answered, and published nothing here
+  absent: "scope", //       out of scope for this region, by design
+  failed: "unreachable", // the one that is a fault
+  pending: "waiting",
+};
+// A sixth value exists but is never derived from a state: "declined", set
+// explicitly on the layer when BeHERE chose not to ask (a spent Opendatasoft
+// quota budget). Nobody failed and nothing is missing from the portal, so it
+// must not be painted as the fault that `unreachable` is.
+
 /** The source + vintage line every layer and every catalogue entry carries. */
 function renderSource(ctx, sourceId, vintage) {
   const { title, vintage: v } = sourceLine(ctx, sourceId, vintage);
   const p = el("p", "around-src");
-  p.appendChild(el("span", "around-src__name", title));
+  // `.tag .tag-neutral` per UI_SPEC 4.2. The class name is unchanged; only the
+  // shape it is drawn in is.
+  p.appendChild(el("span", "tag tag-neutral around-src__name", title));
   if (v) {
     p.appendChild(document.createTextNode(" · "));
     const time = el("time", "around-src__vintage", v);
@@ -1259,54 +1358,128 @@ function renderFlag(ctx) {
   return sup;
 }
 
-function renderItem(ctx, item) {
+/**
+ * Can this result be dropped on the ground as a marker?
+ *
+ * A containment hit (`inside`) carries the DEVICE position, not the feature's
+ * own: `fetchHeritage` asks "which delineations contain this exact point" and
+ * the answer has no point of its own, which is why its distance is exactly 0.
+ * Drawing it as a marker would stack a pin on the position dot and claim a
+ * precision Onroerend Erfgoed never published. So it stays a text result.
+ */
+function canPlace(item) {
+  return (
+    !!item &&
+    !item.inside &&
+    Number.isFinite(item.lat) &&
+    Number.isFinite(item.lon) &&
+    Math.abs(item.lat) <= 90 &&
+    Math.abs(item.lon) <= 180
+  );
+}
+
+/**
+ * One result, as the item card of UI_SPEC 2.3.
+ *
+ * The card is a real `button` when the result has a point of its own, because
+ * that is what makes selection bidirectional (UI_SPEC 3.3): tapping the card
+ * lights the marker, tapping the marker lights the card. When there is no point
+ * the card is a plain `div`: a control that cannot do anything is worse than no
+ * control, and it would still take a tab stop.
+ *
+ * An outbound link is a SEPARATE control in the tag row, never the card itself.
+ * An `<a>` inside a `<button>` is invalid HTML and a nested-interactive trap
+ * for a screen reader; the chevron is labelled with the record's own name, so
+ * it needs no new translated string and it never machine-translates that name.
+ *
+ * @returns {{node: HTMLElement, translated: boolean, marker: BandMarker|null}}
+ */
+function renderItem(ctx, item, layerId, selectedKey) {
   const li = el("li", "around-item");
   li.dataset.cat = item.cat || "";
-
-  const dist = el("span", "around-item__dist", item.inside ? "—" : formatDistance(item.dist));
-  if (item.inside) dist.title = t(ctx, "around.here");
-  li.appendChild(dist);
-
-  const body = el("span", "around-item__body");
+  li.dataset.key = item.key;
 
   const resolve = resolverOf(ctx);
   const label = resolve(item, "poi", ctx.uiLang, {
     override: ctx.override,
     regionDefault: ctx.regionDefault,
   });
+  const lang = label.lang !== "?" ? label.lang : "";
+  const placeable = canPlace(item);
+
+  const card = el(placeable ? "button" : "div", "card around-item__card");
+  if (placeable) {
+    card.type = "button";
+    card.dataset.key = item.key;
+    if (selectedKey && selectedKey === item.key) {
+      card.setAttribute("aria-current", "true");
+      li.dataset.selected = "true";
+    }
+  }
+
+  const head = el("span", "around-item__head");
   // kind "poi": NO inline untranslated marker. One endonym note per panel
   // instead (CONTRACT §9.3). Marking 2,637 street-language names inline would
   // be noise about our own policy, not information.
-  const nameNode = item.href
-    ? el("a", "around-item__name around-item__link")
-    : el("span", "around-item__name");
-  nameNode.textContent = label.text;
-  nameNode.lang = label.lang !== "?" ? label.lang : "";
-  if (item.href) {
-    nameNode.href = item.href;
-    nameNode.rel = "noopener noreferrer";
-    nameNode.target = "_blank";
-  }
-  body.appendChild(nameNode);
+  const nameNode = el("span", "around-item__name", label.text);
+  nameNode.lang = lang;
+  head.appendChild(nameNode);
 
+  const dist = el("span", "around-item__dist", item.inside ? "—" : formatDistance(item.dist));
+  if (item.inside) dist.title = t(ctx, "around.here");
+  head.appendChild(dist);
+  card.appendChild(head);
+
+  if (item.detail) {
+    const d = el("span", "around-item__detail", item.detail);
+    d.lang = lang;
+    card.appendChild(d);
+  }
+  li.appendChild(card);
+
+  const tags = el("p", "around-item__tags");
   const cat = catLabel(ctx, item.cat);
   if (cat && cat.text) {
-    const c = el("span", "around-item__cat", cat.text);
-    body.appendChild(c);
+    const c = el("span", "tag tag-neutral around-item__cat", cat.text);
+    tags.appendChild(c);
     // kind "cat" DOES take an inline marker: an uncurated category label is a
     // real curation gap, not a language policy.
     if (!cat.translated) c.appendChild(renderFlag(ctx));
   }
-
-  if (item.detail) {
-    const d = el("span", "around-item__detail", item.detail);
-    d.lang = label.lang !== "?" ? label.lang : "";
-    body.appendChild(d);
+  if (item.inside) {
+    tags.appendChild(el("span", "tag tag-accent-2 around-item__here", t(ctx, "around.here")));
   }
-  if (item.inside) body.appendChild(el("span", "around-item__here", t(ctx, "around.here")));
+  if (item.href) {
+    const a = el("a", "tag tag-outline around-item__link");
+    a.href = item.href;
+    a.rel = "noopener noreferrer";
+    a.target = "_blank";
+    // The record's own name IS the link text for a screen reader. No new UI
+    // string, and no translation of a place name (PLAN's endonym rule).
+    a.setAttribute("aria-label", label.text);
+    if (lang) a.lang = lang;
+    a.appendChild(icon("chevron-right", 14));
+    tags.appendChild(a);
+  }
+  if (tags.childNodes.length) li.appendChild(tags);
 
-  li.appendChild(body);
-  return { node: li, translated: label.translated };
+  const marker = placeable
+    ? {
+        band: "around",
+        key: item.key,
+        lat: item.lat,
+        lon: item.lon,
+        label: label.text,
+        lang,
+        kind: layerId || "",
+        cat: item.cat || "",
+        dist: item.dist,
+        sourceId: item.sourceId || "",
+        vintage: item.vintage || "",
+      }
+    : null;
+
+  return { node: li, translated: label.translated, marker };
 }
 
 /**
@@ -1315,16 +1488,20 @@ function renderItem(ctx, item) {
  * renders blank, and no state in which a spinner survives: every fetch has a
  * hard per-source TIMEOUT_MS.
  */
-function renderLayer(ctx, layer) {
+function renderLayer(ctx, layer, selectedKey, sink) {
+  const noteKind = layer.kind || NOTE_KIND[layer.state] || layer.state;
   const details = el("details", "around-layer around-layer--" + layer.state);
   details.dataset.layer = layer.id;
+  details.dataset.kind = noteKind;
   if (layer.state === "ok") details.open = true;
   if (layer.state === "pending") details.setAttribute("aria-busy", "true");
 
   const summary = el("summary", "around-layer__summary");
   summary.appendChild(el("span", "around-layer__name", layer.title || placeholderTitle(ctx, layer.id)));
   const n = layer.items ? layer.items.length : 0;
-  summary.appendChild(el("span", "around-layer__count", layer.state === "ok" ? String(n) : "—"));
+  summary.appendChild(
+    el("span", "tag tag-neutral around-layer__count", layer.state === "ok" ? String(n) : "—")
+  );
   details.appendChild(summary);
 
   const body = el("div", "around-layer__body");
@@ -1333,14 +1510,15 @@ function renderLayer(ctx, layer) {
   if (layer.state === "ok" && n > 0) {
     const ol = el("ol", "around-list");
     for (const item of layer.items) {
-      const { node, translated } = renderItem(ctx, item);
+      const { node, translated, marker } = renderItem(ctx, item, layer.id, selectedKey);
       if (!translated) anyUntranslated = true;
+      if (marker && sink) sink.push(marker);
       ol.appendChild(node);
     }
     body.appendChild(ol);
   } else {
     // Honest copy naming the missing thing, never a blank card.
-    body.appendChild(el("p", "around-layer__missing", layer.note || layer.missing || ""));
+    body.appendChild(missingEl(noteKind, layer.note || layer.missing || ""));
   }
 
   if (layer.extra) {
@@ -1351,6 +1529,22 @@ function renderLayer(ctx, layer) {
   body.appendChild(renderSource(ctx, layer.sourceId, layer.vintage));
   details.appendChild(body);
   return details;
+}
+
+/**
+ * The honest sentence naming what is missing, tagged with which silence it is.
+ *
+ * `failed`, and only `failed`, is a fault, so it is the only one that gets
+ * the warn tone and the only one that carries a glyph. The glyph is the
+ * non-colour half of that signal (UI_SPEC 7.6): a reader in greyscale, or one
+ * who cannot tell the warm tint from the quiet one, still sees that this row is
+ * different in kind from "nobody published this here".
+ */
+function missingEl(kind, text) {
+  const p = el("p", "around-layer__missing", text);
+  p.dataset.kind = kind;
+  if (kind === "unreachable") p.insertBefore(icon("wifi-off", 14), p.firstChild);
+  return p;
 }
 
 /**
@@ -1392,10 +1586,15 @@ function placeholderSource(ctx, id) {
 function renderCatalogue(ctx, layer) {
   const details = el("details", "around-layer around-catalogue around-layer--" + layer.state);
   details.dataset.layer = "catalogue";
+  details.dataset.kind = NOTE_KIND[layer.state] || layer.state;
   const summary = el("summary", "around-layer__summary");
   summary.appendChild(el("span", "around-layer__name", layer.title || placeholderTitle(ctx, "catalogue")));
   summary.appendChild(
-    el("span", "around-layer__count", layer.state === "ok" ? String(layer.total || layer.items.length) : "—")
+    el(
+      "span",
+      "tag tag-neutral around-layer__count",
+      layer.state === "ok" ? String(layer.total || layer.items.length) : "—"
+    )
   );
   details.appendChild(summary);
 
@@ -1425,7 +1624,7 @@ function renderCatalogue(ctx, layer) {
     }
     body.appendChild(ul);
   } else {
-    body.appendChild(el("p", "around-layer__missing", layer.note || layer.missing || ""));
+    body.appendChild(missingEl(NOTE_KIND[layer.state] || layer.state, layer.note || layer.missing || ""));
   }
   body.appendChild(renderSource(ctx, AROUND_SOURCE_IDS.catalogue, layer.vintage));
   details.appendChild(body);
@@ -1577,6 +1776,11 @@ export async function collectAround(ctx, signal, onLayer) {
             r = {
               entry,
               state: "failed",
+              // Presentation only: the STATE stays `failed`, because nothing
+              // was fetched and the layer really is empty. But nobody failed
+              // here (BeHERE declined to spend the last 2% of the portal's
+              // daily budget), so the note must not read as a fault.
+              kind: "declined",
               items: [],
               note: t(ctx, "around.quota", { host: entry.host }),
             };
@@ -1591,6 +1795,7 @@ export async function collectAround(ctx, signal, onLayer) {
             sourceId: AROUND_SOURCE_IDS.ods[entry.host] || "ods_" + entry.host,
             vintage: r.vintage || "live",
             state: r.state,
+            kind: r.kind,
             items: sortByDistance(withinRadius(r.items, entry.radius || ctx.radiusM)),
             note: r.note,
             missing:
@@ -1690,7 +1895,10 @@ function municipalityName(ctx, nis) {
  * @param {Object} [options]
  * @param {number} [options.radiusM=1200]
  * @param {number} [options.debounceMs=400]
- * @returns {{update: Function, refresh: Function, destroy: Function, element: HTMLElement}}
+ * @returns {{update: Function, refresh: Function, destroy: Function,
+ *            element: HTMLElement, getMarkers: Function, onMarkers: Function,
+ *            select: Function, getSelected: Function, onSelect: Function,
+ *            getSummary: Function}}
  *
  * `update(fix)` takes:
  *   {number}  lat, lon        Device position, WGS84 degrees. Required.
@@ -1755,6 +1963,114 @@ export function createAroundBand(root, options = {}) {
   let last = null; // last fix actually rendered
   let destroyed = false;
 
+  /* --- the map surface (see section 0) ---------------------------------- */
+
+  /** The `.band` this body lives in, when the shell mounted it. */
+  const bandEl = root && typeof root.closest === "function" ? root.closest(".band") : null;
+
+  /** Markers per layer, so a progressive render republishes as each lands. */
+  const markersByLayer = new Map();
+  /** @type {BandMarker[]} flattened and sorted, the published view */
+  let markers = [];
+  const markerListeners = new Set();
+  const selectListeners = new Set();
+  let selectedKey = null;
+  let count = 0;
+  let state = "idle";
+
+  function setBandState(s) {
+    state = s;
+    if (bandEl) bandEl.dataset.state = s;
+    section.dataset.state = s;
+  }
+
+  function publishMarkers() {
+    const flat = [];
+    for (const list of markersByLayer.values()) flat.push(...list);
+    // The same ordering as the list: real haversine metres, then the key, so a
+    // marker and its card are always in the same order for both eyes.
+    flat.sort((a, b) => a.dist - b.dist || String(a.key).localeCompare(String(b.key)));
+    markers = flat;
+    for (const fn of markerListeners) {
+      try {
+        fn(markers);
+      } catch (e) {
+        console.error("[around] onMarkers listener threw", e);
+      }
+    }
+  }
+
+  function markerFor(key) {
+    return markers.find((m) => m.key === key) || null;
+  }
+
+  /** Paint the current selection onto whatever cards are in the DOM now. */
+  function applySelection(scroll) {
+    let target = null;
+    for (const card of layersEl.querySelectorAll(".around-item__card[data-key]")) {
+      const mine = selectedKey !== null && card.dataset.key === selectedKey;
+      const li = card.closest(".around-item");
+      if (mine) {
+        card.setAttribute("aria-current", "true");
+        if (li) li.dataset.selected = "true";
+        target = card;
+      } else {
+        card.removeAttribute("aria-current");
+        if (li) delete li.dataset.selected;
+      }
+    }
+    if (target && scroll) scrollIntoPanel(target);
+    return target;
+  }
+
+  /**
+   * Select a result, or clear the selection with `null`.
+   *
+   * This is the call `map.js` makes when a marker is tapped. It does NOT
+   * re-emit `onSelect` unless asked, so a marker tap cannot bounce back into
+   * the map and start a loop.
+   *
+   * @param {string|null} key
+   * @param {{scroll?: boolean, silent?: boolean}} [opts]
+   *        `scroll` brings the card into view inside the panel (UI_SPEC 3.3);
+   *        `silent: false` re-emits, which only a test should ever want.
+   * @returns {boolean} true when this band owns the key
+   */
+  function select(key, opts = {}) {
+    const next = key === null || key === undefined ? null : String(key);
+    const known = next === null || markers.some((m) => m.key === next);
+    if (next !== null && !known) return false;
+    selectedKey = next;
+    applySelection(opts.scroll === true);
+    if (opts.silent === false) emitSelect();
+    return true;
+  }
+
+  function emitSelect() {
+    const marker = selectedKey === null ? null : markerFor(selectedKey);
+    for (const fn of selectListeners) {
+      try {
+        fn(selectedKey, marker);
+      } catch (e) {
+        console.error("[around] onSelect listener threw", e);
+      }
+    }
+  }
+
+  /* One delegated listener for the whole band, so a re-render never leaks a
+   * handler and a thousand-item layer never costs a thousand listeners. */
+  layersEl.addEventListener("click", (ev) => {
+    const target = ev.target;
+    if (!target || typeof target.closest !== "function") return;
+    const card = target.closest(".around-item__card[data-key]");
+    if (!card || !layersEl.contains(card)) return;
+    // Tapping the open card again clears the selection: the map's pin is the
+    // only thing that got louder, so the reader must be able to make it quiet.
+    selectedKey = selectedKey === card.dataset.key ? null : card.dataset.key;
+    applySelection(false);
+    emitSelect();
+  });
+
   /** Debounced entry point. Ignores sub-threshold movement. No polling. */
   function update(fix) {
     if (destroyed || !fix || !Number.isFinite(fix.lat) || !Number.isFinite(fix.lon)) return;
@@ -1802,6 +2118,14 @@ export function createAroundBand(root, options = {}) {
     sub.textContent = t(ctx, "around.radius", { r: ctx.radiusM });
     section.setAttribute("aria-busy", "true");
     status.textContent = t(ctx, "around.loading");
+    setBandState("loading");
+
+    // A new position invalidates every marker: the distances that ordered them
+    // were measured from the old one. Republish immediately so the map drops
+    // stale pins on the same frame the skeleton is drawn, rather than holding
+    // yesterday's ground under today's dot.
+    markersByLayer.clear();
+    publishMarkers();
 
     // Skeleton, in final order.
     layersEl.textContent = "";
@@ -1819,7 +2143,7 @@ export function createAroundBand(root, options = {}) {
         // Naming the slow source turns a mystery into information, and it is
         // the same honesty the empty and absent states already owe the reader.
         missing: t(ctx, id === "heritage" ? "around.loading.heritage" : "around.loading"),
-      });
+      }, selectedKey, null);
       layersEl.appendChild(node);
       slots.set(id, { node, index });
     });
@@ -1829,13 +2153,22 @@ export function createAroundBand(root, options = {}) {
       const slot = slots.get(layer.id);
       if (!slot) return;
       let fresh;
+      /** @type {BandMarker[]} */
+      const sink = [];
       try {
-        fresh = layer.id === "catalogue" ? renderCatalogue(ctx, layer) : renderLayer(ctx, layer);
+        fresh =
+          layer.id === "catalogue"
+            ? // The Brussels catalogue is METADATA: its records carry a bounding
+              // box and no point, so it contributes no marker. Placing one would
+              // fabricate a coordinate, exactly as fabricating a distance would.
+              renderCatalogue(ctx, layer)
+            : renderLayer(ctx, layer, selectedKey, sink);
       } catch (e) {
         // A render bug must not strand a slot on "Loading…" forever. Replace
         // it with something true instead: acceptance test 9 forbids a spinner
         // that never resolves, and that has to hold for our own defects too.
         console.error("[around] render failed for layer " + layer.id, e);
+        sink.length = 0;
         fresh = renderLayer(ctx, {
           id: layer.id,
           title: layer.title || placeholderTitle(ctx, layer.id),
@@ -1844,10 +2177,12 @@ export function createAroundBand(root, options = {}) {
           sourceId: layer.sourceId || placeholderSource(ctx, layer.id),
           vintage: layer.vintage || "",
           missing: t(ctx, "around.rendererror"),
-        });
+        }, selectedKey, null);
       }
       layersEl.replaceChild(fresh, slot.node);
       slot.node = fresh;
+      markersByLayer.set(layer.id, sink);
+      publishMarkers();
     };
 
     let result;
@@ -1862,20 +2197,91 @@ export function createAroundBand(root, options = {}) {
     if (destroyed || signal.aborted) return;
 
     section.removeAttribute("aria-busy");
+    count = result.count;
     status.textContent =
       result.count > 0
         ? result.count + " " + t(ctx, "around.radius", { r: ctx.radiusM })
         : t(ctx, "around.none", { r: ctx.radiusM });
+
+    /* The three silences of UI_SPEC 2.5, as one band-level state.
+     *
+     * `error` is reserved for the case that is genuinely a fault: every layer
+     * this region has was asked and not one could be reached. A region whose
+     * layers are `absent` by design, or `empty` because nobody published here,
+     * is NOT an error, and Ottignies-LLN must never be painted as broken. */
+    const all = result.catalogue ? result.layers.concat([result.catalogue]) : result.layers;
+    const reachable = all.filter((l) => l && l.state !== "absent");
+    const allFailed = reachable.length > 0 && reachable.every((l) => l.state === "failed");
+    setBandState(result.count > 0 ? "ready" : allFailed ? "error" : "empty");
+
+    // A selection that no longer exists at the new position is not a selection.
+    if (selectedKey !== null && !markers.some((m) => m.key === selectedKey)) {
+      selectedKey = null;
+      emitSelect();
+    } else {
+      applySelection(false);
+    }
   }
 
   function destroy() {
     destroyed = true;
     if (timer) clearTimeout(timer);
     if (controller) controller.abort(new DOMException("destroyed", "AbortError"));
+    markerListeners.clear();
+    selectListeners.clear();
+    markersByLayer.clear();
+    markers = [];
     root.textContent = "";
   }
 
-  return { update, refresh, destroy, element: section };
+  return {
+    id: "around",
+    update,
+    refresh,
+    destroy,
+    element: section,
+
+    /** @returns {BandMarker[]} ascending real haversine metres. Never null. */
+    getMarkers() {
+      return markers.slice();
+    },
+
+    /**
+     * Hear about every republish. Fires once per layer as the sources settle,
+     * so the map fills in progressively exactly as the panel does.
+     * @param {(markers: BandMarker[]) => void} fn
+     * @returns {() => void} unsubscribe
+     */
+    onMarkers(fn) {
+      if (typeof fn !== "function") return () => {};
+      markerListeners.add(fn);
+      if (markers.length) fn(markers);
+      return () => markerListeners.delete(fn);
+    },
+
+    select,
+
+    /** @returns {string|null} */
+    getSelected() {
+      return selectedKey;
+    },
+
+    /**
+     * Hear about a selection the READER made in the panel.
+     * @param {(key: string|null, marker: BandMarker|null) => void} fn
+     * @returns {() => void} unsubscribe
+     */
+    onSelect(fn) {
+      if (typeof fn !== "function") return () => {};
+      selectListeners.add(fn);
+      return () => selectListeners.delete(fn);
+    },
+
+    /** What the pill needs: a state and a number, never a sentence. */
+    getSummary() {
+      return { id: "around", state, count, markers: markers.length };
+    },
+  };
 }
 
 /** Normalise a fix into the context every adapter reads. */
@@ -1921,30 +2327,53 @@ function buildCtx(fix, radiusM) {
 //  around__layers               container for all layers
 //  around__note                 the single endonym note per panel
 //
-//  around-layer                 one <details> per layer
+//  around-layer                 one <details> per layer, drawn as a card.
+//                               Carries data-layer and data-kind (see below).
 //  around-layer--ok             has results, rendered open
 //  around-layer--empty          source answered, published nothing here
 //  around-layer--failed         source could not be reached
 //  around-layer--absent         out of scope for this region, by design
 //  around-layer__summary        <summary>
 //  around-layer__name           layer title
-//  around-layer__count          result count, or an em dash
+//  around-layer__count          result count or an em dash; .tag .tag-neutral
 //  around-layer__body           <div>
-//  around-layer__missing        the honest copy naming what is missing
+//  around-layer__missing        the honest copy naming what is missing.
+//                               data-kind says WHICH silence this is, so the
+//                               stylesheet can tone it and dock.js can dot it
+//                               without a fourth translated sentence:
+//                                 nothing      published nothing here
+//                                 scope        out of scope for this region
+//                                 declined     not asked on purpose: the
+//                                              portal's daily budget is spent.
+//                                              NB this layer also carries
+//                                              --failed, because nothing was
+//                                              fetched; data-kind is the one
+//                                              that says whose fault it is,
+//                                              and it says nobody's.
+//                                 unreachable  could not be reached (a fault,
+//                                              and the only one: it is also
+//                                              the only one carrying a glyph)
+//                                 waiting      still in flight
 //  around-layer__note           secondary note (partial, truncated, foreign)
 //
 //  around-list                  <ol>, already in ascending distance order
-//  around-item                  <li>, carries data-cat="<category key>"
+//  around-item                  <li>, carries data-cat, data-key and
+//                               data-selected="true" when it is the selection
+//  around-item__card            the item card of UI_SPEC 2.3. A <button> when
+//                               the result has a point of its own, a <div>
+//                               otherwise. aria-current="true" when selected.
+//  around-item__head            <span>, name + distance
+//  around-item__name            <span>, carries lang=""
 //  around-item__dist            distance, "120 m" / "1.4 km" / em dash
-//  around-item__body            <span> wrapping the text side
-//  around-item__name            <span> or <a class="around-item__link">
-//  around-item__link            added to the name when it is a link
-//  around-item__cat             category label
 //  around-item__detail          address / type line, carries lang=""
-//  around-item__here            "you are inside this"
+//  around-item__tags            <p>, the tag row
+//  around-item__cat             category label; .tag .tag-neutral
+//  around-item__here            "you are inside this"; .tag .tag-accent-2
+//  around-item__link            outbound <a>; .tag .tag-outline, chevron glyph,
+//                               aria-label is the record's own name
 //
 //  around-src                   <p>, source + vintage, on EVERY layer
-//  around-src__name
+//  around-src__name             .tag .tag-neutral
 //  around-src__vintage          <time datetime="YYYY-MM-DD">
 //  around-flag                  <sup> untranslated marker (munty/cat/ui only)
 //

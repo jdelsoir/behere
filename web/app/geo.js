@@ -758,6 +758,7 @@ export function watchPosition(handlers, options = {}) {
   let pending = null;      // newest raw fix not yet emitted
   let pendingSince = 0;    // when the oldest un-emitted fix arrived
   let emitted = null;      // last fix handed to onPosition
+  let emittedWall = 0;     // WALL CLOCK of that emission; see flush()
   let stopped = false;
 
   function clearTimers() {
@@ -767,6 +768,7 @@ export function watchPosition(handlers, options = {}) {
 
   function emit(fix) {
     emitted = fix;
+    emittedWall = Date.now();
     pending = null;
     pendingSince = 0;
     clearTimers();
@@ -781,7 +783,28 @@ export function watchPosition(handlers, options = {}) {
       const moved = haversineMetres(emitted.lat, emitted.lon, fix.lat, fix.lon);
       const sharper = fix.accuracy > 0 && emitted.accuracy > 0 &&
         fix.accuracy <= emitted.accuracy / 2;
-      const since = fix.at - emitted.at;
+      // The floor is a rate limit on EMISSIONS, so it is measured in wall clock
+      // since the last emission -- NOT as `fix.at - emitted.at`.
+      //
+      // That subtraction was the bug. A pending fix's `at` is stamped by the
+      // device when the fix was taken and never changes while it waits, so the
+      // difference could not grow: the floor timer fired, recomputed the same
+      // `since`, found it still under the interval and armed itself again, for
+      // ever, at a fixed period. The fix was never emitted and the timer never
+      // stopped -- a hold that had become a loop.
+      //
+      // It bit whenever a device produced a couple of fixes and then went
+      // quiet: a coarse first fix followed within 10 s by a better one that is
+      // not twice as sharp left the app showing the coarse position with no way
+      // to correct, because nothing ever arrived to refresh the comparison. A
+      // walking user was spared only because the 1 Hz stream kept replacing
+      // `pending` with a fresher timestamp, which is why this survived testing.
+      // push() was spared too: it bypasses the debounce by design, so
+      // window.behere.at() always worked and hid the fault from desktop runs.
+      //
+      // Wall clock cannot stall: the timer is still one-shot, still re-armed at
+      // most once per flush, and now it always terminates.
+      const since = Date.now() - emittedWall;
       if (moved < opt.minMoveMetres && !sharper) { pending = null; pendingSince = 0; return; }
       if (since < opt.minIntervalMs && !sharper) {
         // Hold it: re-arm once, at the interval floor, rather than dropping a

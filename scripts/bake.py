@@ -435,6 +435,39 @@ def delta(values):
 
 PRECACHE_NAME = "precache.json"
 
+# A manifest entry may only ever be a plain relative path to a baked file under
+# web/data/. This rejects a leading slash, a backslash, any URL scheme, an
+# authority ("//host/..."), and any parent segment.
+_PRECACHE_BAD = re.compile(r"""(?x)
+      ^/                                  # absolute path
+    | ^[A-Za-z][A-Za-z0-9+.\-]*:          # https:, data:, javascript:
+    | //                                  # protocol-relative or an authority
+    | \\                                  # a Windows separator
+    | (?:^|/)\.\.(?:/|$)                  # a parent segment
+""")
+
+
+def assert_baked_relpath(rel):
+    """CONTRACT: precache.json lists baked files, and nothing else.
+
+    THIS IS THE BAKE-TIME HALF OF THE OSM TILE PROHIBITION. web/sw.js
+    precaches every entry of this manifest at install, across all seven pilot
+    cities at once. The OSM tile usage policy forbids bulk downloading, and
+    downloading an area of tiles for offline use IS bulk downloading, so a
+    basemap tile must never be listed here -- nor any other absolute URL, which
+    would also turn a static site's install step into an off-origin fetch loop.
+
+    Structural rather than a denylist: no host can be named at all, so this
+    cannot be defeated by a different tile server, a mirror or a CDN alias.
+    """
+    if not isinstance(rel, str) or not rel or _PRECACHE_BAD.search(rel):
+        raise BakeError(
+            "precache.json may only list plain relative paths under web/data/; "
+            "refusing %r. An absolute URL here would make the service worker "
+            "bulk-download off-origin at install, which for OSM tiles is an "
+            "explicit breach of the tile usage policy." % (rel,))
+    return rel
+
 
 def precache_doc(relpaths, cells_by_city, cities, vintage=VINTAGE):
     """The manifest web/sw.js reads to store the whole release at install.
@@ -449,11 +482,16 @@ def precache_doc(relpaths, cells_by_city, cities, vintage=VINTAGE):
     from the bytes on disk, and no wall-clock value appears anywhere. Carries
     the pinned vintage, which is also what verification gate 6 checks for.
 
+    Every entry is put through assert_baked_relpath(), so an OSM tile -- or any
+    other absolute URL -- cannot reach this document even if something upstream
+    hands one in. See that function for why that matters.
+
     :param relpaths: iterable of paths relative to web/data/
     :param cells_by_city: {nis: [cell id, ...]}
     :param cities: the NIS codes shipped in this release
     """
-    files = sorted(set(r for r in relpaths if r != PRECACHE_NAME))
+    files = sorted(set(assert_baked_relpath(r)
+                       for r in relpaths if r != PRECACHE_NAME))
     cells = {}
     for nis in sorted(cities):
         listed = sorted(set(cells_by_city.get(nis, ())))

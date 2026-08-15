@@ -63,6 +63,43 @@ The decisive property of each source is whether a browser on a `github.io` origi
 | **Flemish heritage, point in polygon** | `https://geo.onroerenderfgoed.be/zoekdiensten/afbakeningen?geometrie={GeoJSON point}&crs=EPSG:4326` | `*` | Returns protected monuments, landscapes, archaeological zones, UNESCO core and buffer, with geometry |
 | **City place datasets** | `https://{www.odwb.be\|data.stad.gent\|opendata.brussels.be}/api/explore/v2.1/catalog/datasets` | `*` | Opendatasoft Explore v2.1, no key. **Corrected:** the daily quota is **per portal, not a flat 20,000**. Measured: `data.stad.gent` 250,000, `opendata.brussels.be` 100,000, `www.odwb.be` 20,000. Always read the `x-ratelimit-limit` header rather than assuming |
 | **Brussels regional catalogue** | `https://catalog.datastore.brussels/geonetwork/srv/eng/q?_content_type=json` | `*` | 544 records. The `/api/search` path returns 403, use this one |
+| **OpenStreetMap raster basemap** *(added 15 August 2026)* | `https://tile.openstreetmap.org/{z}/{x}/{y}.png` | n/a, it is an `<img>` | ODbL 1.0. The **only** runtime source that is not fetched with `fetch()`, so CORS does not apply and it is in `img-src`, never `connect-src`. Terms below are conditions of use, not preferences |
+
+#### The basemap, and the four conditions attached to it
+
+Added on 15 August 2026 with the map-first revamp (section 6). It is the one
+layer in this app that is neither ours nor baked, and it is the one layer that
+tells a third party roughly where the user is standing. That was a deliberate
+choice, taken with the costs on the table, and it is paid for as follows.
+
+1. **Attribution is visible, not buried.** `© OpenStreetMap contributors` is
+   drawn on the map itself, linking to <https://www.openstreetmap.org/copyright>,
+   on any frame where a tile has been drawn. ODbL 1.0 requires the credit; the
+   OSM Foundation's attribution guidelines require that it be legible on the map
+   rather than hidden behind an info button. It is a keyboard tab stop.
+2. **Tiles are runtime-cached only, and never precached.** They live in their own
+   `behere-tiles-v1` cache, capped at 300 entries and evicted least recently
+   *used*, with a 7-day TTL. They are categorically barred from `precache.json`
+   and from the install-time shell precache. Pre-fetching a basemap over the 674
+   pilot cells is bulk downloading, which the OSM tile usage policy forbids in
+   terms. `scripts/gen_precache.py` carries a **tile gate** that fails the build
+   if the host reaches the manifest, any `sw.js` shell list, or any line calling
+   `cache.add`/`addAll`; it runs inside `--check`, so CI cannot skip it by
+   editing YAML.
+3. **No prefetching, no speculation, no scraping.** Only tiles intersecting the
+   current viewport are requested, one zoom level at a time. There is no
+   pre-warm, no adjacent-tile lookahead, no background refresh loop.
+4. **Failure degrades to the vector map.** After three consecutive tile errors
+   the raster layer switches itself off and the app keeps drawing the baked
+   sector polygons, streets and stops. In airplane mode the tiles simply never
+   arrive, and acceptance test 1 is unaffected because it never depended on
+   them. Already-loaded tiles are kept and stay attributed.
+
+The honest cost is recorded in section 11: a tile request tells OSM's CDN a
+1 km-ish position and an IP address, and that request is made by the browser
+directly, so no promise of ours can intercept it. It is the single reason the
+sentence "your position never leaves the device" is now qualified rather than
+absolute.
 
 > **Trap:** a `HEAD` request to any NAP `/static` feed returns HTTP 404 with a JSON body, while `GET` on the same URL returns HTTP 200 and a real ZIP. Never health-check those endpoints with HEAD.
 >
@@ -211,11 +248,13 @@ RUNTIME (browser on github.io, no proxy)
   Onroerend Erfgoed ....... heritage at this exact point
   NAP GTFS-RT ............. delays, protobuf
   iRail ................... live departures
+  OSM raster tiles ........ the basemap, <img> not fetch, ODbL, §3.1
 
 SERVICE WORKER
-  cache-first .............. hashed shards, sector geometry, app shell
+  cache-first .............. hashed shards, sector geometry, app shell, fonts
   network-first ............ navigations, statistics, live departures
   stale-while-revalidate ... POI layers
+  runtime-only, never precached ... OSM tiles, own cache, 300 entries, LRU, 7d TTL
   offline fallback ......... last-known departures with an explicit "as of" timestamp
 ```
 
@@ -230,6 +269,7 @@ SERVICE WORKER
   scripts/
     bake.py                 idempotent, byte-identical output for identical input
     gen_icons.py            192 / 512 / maskable 512 / apple / favicon
+    fetch_fonts.py          vendors the two OFL faces, sha256-pinned, --check
   web/
     index.html
     manifest.webmanifest    start_url, scope, id all = /behere/
@@ -237,7 +277,11 @@ SERVICE WORKER
     offline.html
     404.html
     .nojekyll
-    app/                    js modules: here, around, go, now, i18n, geo
+    app/                    js modules: here, around, go, now, zoom, i18n, geo,
+                            map + mercator (the map), icons (inlined Lucide),
+                            tokens.css + app.css + map.css
+    fonts/                  self-hosted Caprasimo and Figtree woff2, plus each
+                            family's own OFL text. No Google Fonts request.
     data/
       meta.json             vintage, build date, source list
       nis_history.json      {old_nis, new_nis, valid_from}
@@ -250,7 +294,31 @@ SERVICE WORKER
 
 ### Screen model
 
-Four bands stacked on one screen. No tabs, no dashboard.
+**Corrected 15 August 2026, and this one is a reversal, not a measurement.**
+The brief said *"Four bands stacked on one screen. No tabs, no dashboard."* The
+app now ships map-first: a full-bleed map is the page, and the five bands live
+in a dock of five pills along the bottom, one of which may be expanded into a
+panel over the map. The original line stood against a *dashboard* — five cards
+of equal weight, none of them the answer — and that objection is still right and
+still honoured. What changed is the answer to "where am I": a stacked column of
+text answered it in words while the screen showed nothing of the ground, and the
+one question the app exists to answer is a spatial one.
+
+What survives the change, unaltered, because it was never about layout:
+
+- **One question per band, in the reader's own words.** The pills are a
+  disclosure, not a tab strip: "no panel open at all" is a real and common
+  state, which is exactly what the tabs pattern has no name for.
+- **The band is the answer; the map is the answer drawn.** Every marker,
+  polygon and outline on the map has a text equivalent in a band, and where the
+  two disagree the text is the one that has to be right. `#map` is a single
+  labelled tab stop (`role="group"`, arrow keys pan, `+`/`-` zoom, `Home`
+  recentres) placed straight after the skip link, and each drawn layer inside it
+  carries its own `aria-hidden`, so 49 stops in one Brussels shard are read once
+  as the Go band's list and never a second time as 49 loose labels. A layer that
+  is hidden is one that holds nothing focusable, so nothing becomes unreachable.
+- **One authority per fact.** here.js resolves the statistical sector and the
+  map is *told*; it never re-derives geometry.
 
 | Band | Source | Offline behaviour |
 |---|---|---|
@@ -260,7 +328,26 @@ Four bands stacked on one screen. No tabs, no dashboard.
 | Now | live plus calendar rules | calendar rules only |
 | Zoom out (province, country) | Statbel HVD API | last fetched |
 
-**Never render an empty panel.** A missing layer collapses. Say "no market data published for this municipality" rather than showing a blank card. That copy is honest and doubles as a nudge toward the municipality.
+The map adds one layer to that table, and it is the only one that is not ours:
+
+| Layer | Source | Offline behaviour |
+|---|---|---|
+| Basemap raster | tile.openstreetmap.org, runtime only | **absent, and the vector map answers** |
+
+Tiles are **never precached** — pre-fetching a basemap across 674 cells is bulk
+downloading and an explicit breach of the OSM tile usage policy — so they live
+in their own runtime cache, capped at 300 entries and evicted
+least-recently-used. Attribution is visible on every frame where a tile has been
+drawn, which is an ODbL term rather than a design choice. Acceptance test 1 is
+unaffected: in airplane mode the raster layer simply never arrives and "where am
+I" is still answered from the baked shards, on the ground colour.
+
+**Never render an empty panel.** A missing layer collapses. Say "no market data
+published for this municipality" rather than showing a blank card. That copy is
+honest and doubles as a nudge toward the municipality. The revamp sharpened this
+into three distinct silences, because they are three different claims: *published
+nothing here*, *out of scope for this region by design*, and *could not be
+reached*. Only the last is a fault, and only the last is styled like one.
 
 ---
 
@@ -314,10 +401,12 @@ The original estimate assumed an array of verbose JSON objects. **Corrected 15 A
 | Court-Saint-Etienne | 144,777 | **42,644** | not in the original set |
 | Mont-Saint-Guibert | 95,573 | **28,413** | not in the original set |
 | Shared root + i18n | 115,438 | **24,231** | not counted |
-| **Nine cities, whole shipped tree** | **6,458,304** | **1,550,736 B = 1.48 MB** | (2.15 MB for seven) |
+| **Nine cities, whole shipped tree** | **6,464,673** | **1,553,038 B = 1.48 MB** | (2.15 MB for seven) |
 | All 565 municipalities | ~150 MB | ~23 MB | (~33 MB) |
 
-**49.3% of the 3 MB acceptance ceiling**, across 708 files and 674 grid shards. CI fails the build if this figure ever exceeds 3,145,728 B.
+**49.4% of the 3 MB acceptance ceiling**, across 708 files and 674 grid shards. CI fails the build if this figure ever exceeds 3,145,728 B.
+
+**Re-measured 15 August 2026 after the map-first revamp: 1,550,736 → 1,553,038 B, up 2,302.** Every one of those bytes is chrome copy in `web/data/i18n/{en,nl,fr}.json` (en +708, nl +782, fr +812) for the dock, the map controls, the tile note and the three distinct silences. **The revamp baked nothing**, and the tree shows it: the 705 shards all carry mtimes inside one two-second window from a single bake, the three i18n files were edited by hand two and a half hours later, `bake.py` does not generate them, and `gen_precache.py --check` is clean against the result. The city rows above are unchanged and are an *attribution* of shared 1 km cells rather than a partition, so they do not sum to the total; only the total is a measured fact about the shipped tree.
 
 Adding the two Walloon Brabant villages cost **56,354 gzipped bytes**, 1.8% of the ceiling for a 29% larger pilot set. Ottignies-LLN's own figure rose from 70,529 to 74,449 because its neighbours are now baked: addresses that were previously counted as foreign in its shared 1 km cells are real entries today.
 
@@ -419,6 +508,8 @@ Test for contrast, not uniformity.
 9. Geolocation is debounced. Live results are cached 30 to 60 seconds. No polling loops.
 10. Total shipped data under 3 MB gzipped for the whole pilot set.
 
+**All ten survive the map-first revamp unchanged, and three are worth reading against it explicitly.** Test 1 does not touch the basemap: in airplane mode no tile is ever requested, and Here resolves from the baked shards on the ground colour, which is why the raster layer had to be decoration over an answer rather than the answer. Test 7 holds because the tile URL is `{z}/{x}/{y}.png` with no query string, no header and no cookie, and because `img-src` admits exactly one host. Test 8 holds for the basemap too, by the ODbL credit on the map itself: a rolling live service has no vintage date to print, so it prints its source and says it is live, rather than inventing a date.
+
 ---
 
 ## 11. Risks
@@ -433,6 +524,7 @@ Test for contrast, not uniformity.
 | Vintage drift: 565 versus 581 municipalities, sector codes dated 2024 inside a 2025 file, Statbel period labels disagreeing with filenames | Pin one vintage per release, store it in shard metadata, show it in the footer |
 | Rate limits: iRail 3 req/s, Opendatasoft 20,000/day | Debounce, cache, never poll |
 | iOS evicts caches and IndexedDB after 7 days in a plain tab (installed PWAs exempt) | Prompt installation early. A cold start must work with no cache |
+| **The basemap is an external dependency, and the only one that leaks position.** *(added 15 August 2026, with the map-first revamp.)* Every `tile.openstreetmap.org` request tells a third-party CDN an IP address and a tile coordinate, which is a position to about 1 km at z15. The browser issues it directly from an `<img>`, so nothing in this app can intercept or anonymise it. The tiles also **disappear entirely offline**, and they depend on a volunteer-funded service that owes us no availability and can change its terms without notice | **The vector layers always render, and they are the map.** Sector polygons, streets and stops come from the baked shards and are drawn whether or not a single tile arrives, so the raster is decoration over an answer rather than the answer itself. Three consecutive tile errors switch the layer off and the app carries on; airplane mode never sees a request at all, and acceptance test 1 does not touch tiles. The leak is bounded and disclosed: no query string, no identifier, no cookie, one host, declared in `img-src` and nowhere else, named in the README under "what leaves the device", and the attribution link on screen tells the user whose service they are talking to. Tiles are runtime-cached only (§3.1), so a revoked service degrades to the vector map instead of breaking the app |
 
 ### Not verified, do not plan around these yet
 

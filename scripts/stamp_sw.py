@@ -36,7 +36,14 @@ import sys
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 PATTERN = re.compile(r'(const VERSION = ")(__CACHE_VERSION__|[0-9a-f]{12})(";)')
-HASHED_SUFFIXES = (".html", ".css", ".js", ".mjs", ".webmanifest")
+# EVERY suffix the shell cache holds, not just the text ones. The fonts and the
+# app icons are cache-first entries in sw.js's SHELL_REQUIRED, so if re-
+# vendoring a woff2 or regenerating an icon left this hash unchanged, the cache
+# name would not rotate and returning users would be served the old bytes for
+# ever, under the correct filename. web/data is excluded by SKIP_DIRS and holds
+# only JSON anyway, so no data vintage can rotate the shell through this.
+HASHED_SUFFIXES = (".html", ".css", ".js", ".mjs", ".webmanifest",
+                   ".woff2", ".png")
 SKIP_DIRS = {".git", "node_modules", "data", "__pycache__"}
 
 

@@ -251,6 +251,16 @@ jobs:
       - name: Every declared chrome key exists in en, nl and fr
         run: python3 scripts/check_i18n.py
 
+      # The four .woff2 are in sw.js's SHELL_REQUIRED, where cache.addAll makes
+      # a missing or renamed one fail the whole service worker install: the user
+      # then gets no worker, and therefore no offline data, which is acceptance
+      # test 1 taken out by a font. --check is offline: it re-verifies the tree
+      # against the sha256 pins in scripts/fonts.lock.json and makes no request.
+      # It also proves each family's OFL text is still sitting beside it, which
+      # is the condition under which redistributing an OFL face is legal at all.
+      - name: The vendored fonts match their pins, and ship their licences
+        run: python3 scripts/fetch_fonts.py --check
+
       # Node is preinstalled on ubuntu-latest. No npm install, no package.json,
       # no dependency: these are plain .mjs scripts, exactly like scripts/*.py.
       - name: Run the browser-side tests
@@ -259,6 +269,18 @@ jobs:
           node scripts/test_i18n_marker.mjs
           node scripts/test_stats.mjs
           node scripts/test_zoom.mjs
+          node scripts/test_tiles.mjs
+          node scripts/test_map.mjs
+
+      # The seams. Every test above checks ONE module against its own contract,
+      # and all of them can be green while the app is broken, because a seam
+      # belongs to no single module. This boots the real index.html and the real
+      # main.js together and drives a Brussels fix through shell -> bands ->
+      # map. It is what catches a class name the stylesheet does not carry, an
+      # id the shell queries and the markup dropped, or an import of a module
+      # that is not in the build.
+      - name: The shell, the bands and the map as one app
+        run: node scripts/test_integration.mjs
 
       # PLAN acceptance test 1 and phase 1's exit criterion: installs web/sw.js
       # for real, cuts the network, and resolves every pilot city from cache.
