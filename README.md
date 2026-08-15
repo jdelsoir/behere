@@ -370,6 +370,28 @@ a stub, so it can show that the wires connect and nothing throws, and it cannot
 show that the map *looks* right. Layout, font rendering, real tile fetching,
 touch gestures and the dark theme are verified by eye, not by machine.
 
+### Known gaps, as of 15 August 2026
+
+Written down rather than left to be rediscovered. None of these blocks a deploy.
+
+1. **No user-facing basemap switch.** `map.js` exposes `setTilesEnabled()` and
+   nothing calls it, so a user who does not want to talk to OSM has only their
+   browser's data-saver setting. The first thing to fix.
+2. **No dark-mode toggle.** Dark follows `prefers-color-scheme` only. If a
+   toggle is added, all three stylesheets need their `[data-theme]` blocks
+   added together, or the theme will half-apply.
+3. **`--dock-height` has two writers**, `main.js` on `documentElement` and
+   `map.js` on `document.body`. Same value from the same call site and
+   `.map-attrib` correctly reads body's, so it is benign duplication rather
+   than drift, but it is one writer too many.
+4. **Two scripts stamp the service worker** and only `stamp_cache_version.py`
+   is wired into CI. See *Before deploying*.
+5. **Six markup classes have no CSS rule**: `btn__label`, `btn__mark`,
+   `locate-status`, `offline-bar__mark`, `panel-head__text`, `sheet__note`.
+   All are BEM hooks inside already-styled flex parents, and `.locate-status`
+   is styled via its id. Cosmetically inert.
+6. **No browser in the test loop**, as above.
+
 ### Before deploying
 
 Nothing, if you are pushing to `main`: `.github/workflows/deploy.yml` bakes,
